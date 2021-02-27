@@ -22,8 +22,12 @@ struct SimpleVertex
     XMFLOAT3 Tangent;
 };
 
+struct SimpleEye {
+    XMFLOAT3 v;
+};
 
-struct CBNeverChanges
+
+struct CBChangesOnCameraAction
 {
     XMMATRIX mView;
 };
@@ -58,33 +62,35 @@ HINSTANCE                           g_hInst = nullptr;
 HWND                                g_hWnd = nullptr;
 D3D_DRIVER_TYPE                     g_driverType = D3D_DRIVER_TYPE_NULL;
 D3D_FEATURE_LEVEL                   g_featureLevel = D3D_FEATURE_LEVEL_11_0;
-ID3D11Device* g_pd3dDevice = nullptr;
-ID3D11Device1* g_pd3dDevice1 = nullptr;
-ID3D11DeviceContext* g_pImmediateContext = nullptr;
-ID3D11DeviceContext1* g_pImmediateContext1 = nullptr;
-IDXGISwapChain* g_pSwapChain = nullptr;
-IDXGISwapChain1* g_pSwapChain1 = nullptr;
-ID3D11RenderTargetView* g_pRenderTargetView = nullptr;
-ID3D11Texture2D* g_pDepthStencil = nullptr;
-ID3D11DepthStencilView* g_pDepthStencilView = nullptr;
-ID3D11VertexShader* g_pVertexShader = nullptr;
-ID3D11PixelShader* g_pPixelShader = nullptr;
+ID3D11Device*                       g_pd3dDevice = nullptr;
+ID3D11Device1*                      g_pd3dDevice1 = nullptr;
+ID3D11DeviceContext*                g_pImmediateContext = nullptr;
+ID3D11DeviceContext1*               g_pImmediateContext1 = nullptr;
+IDXGISwapChain*                     g_pSwapChain = nullptr;
+IDXGISwapChain1*                    g_pSwapChain1 = nullptr;
+ID3D11RenderTargetView*             g_pRenderTargetView = nullptr;
+ID3D11Texture2D*                    g_pDepthStencil = nullptr;
+ID3D11DepthStencilView*             g_pDepthStencilView = nullptr;
+ID3D11VertexShader*                 g_pVertexShader = nullptr;
+ID3D11PixelShader*                  g_pPixelShader = nullptr;
 //ID3D11PixelShader* g_pPixelShaderSolid = nullptr;
-ID3D11InputLayout* g_pVertexLayout = nullptr;
-ID3D11Buffer* g_pVertexBuffer = nullptr;
-ID3D11Buffer* g_pIndexBuffer = nullptr;
-ID3D11Buffer* g_pCBNeverChanges = nullptr;
-ID3D11Buffer* g_pCBChangeOnResize = nullptr;
-ID3D11Buffer* g_pCBChangesEveryFrame = nullptr;
-ID3D11Buffer* g_pConstantBuffer = nullptr;
-ID3D11ShaderResourceView* g_pTextureRV = nullptr;
-ID3D11SamplerState* g_pSamplerLinear = nullptr;
+ID3D11InputLayout*                  g_pVertexLayout = nullptr;
+ID3D11Buffer*                       g_pVertexBuffer = nullptr;
+ID3D11Buffer*                       g_pIndexBuffer = nullptr;
+ID3D11Buffer*                       g_pCBChangesOnCameraAction = nullptr;
+ID3D11Buffer*                       g_pCBChangeOnResize = nullptr;
+ID3D11Buffer*                       g_pCBChangesEveryFrame = nullptr;
+ID3D11Buffer*                       g_pConstantBuffer = nullptr;
+ID3D11ShaderResourceView*           g_pTextureRV = nullptr;
+ID3D11SamplerState*                 g_pSamplerLinear = nullptr;
 XMMATRIX                            g_World;
 XMMATRIX                            g_View;
 XMMATRIX                            g_Projection;
 XMFLOAT4                            g_vMeshColor(0.7f, 0.7f, 0.7f, 1.0f);
 XMVECTOR                            g_Eye;
-
+XMVECTOR                            g_At;
+XMVECTOR                            g_Up;
+float                               g_Zoom = XM_PIDIV4;
 
 
 //--------------------------------------------------------------------------------------
@@ -511,11 +517,11 @@ HRESULT InitDevice()
     if (FAILED(hr))
         return hr;
     // Create the constant buffers
-    bd.Usage = D3D11_USAGE_DEFAULT;
-    bd.ByteWidth = sizeof(CBNeverChanges);
-    bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    bd.CPUAccessFlags = 0;
-    hr = g_pd3dDevice->CreateBuffer(&bd, nullptr, &g_pCBNeverChanges);
+    //bd.Usage = D3D11_USAGE_DEFAULT;
+    bd.ByteWidth = sizeof(CBChangesOnCameraAction);
+    //bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    //bd.CPUAccessFlags = 0;
+    hr = g_pd3dDevice->CreateBuffer(&bd, nullptr, &g_pCBChangesOnCameraAction);
     if (FAILED(hr))
         return hr;
     bd.ByteWidth = sizeof(CBChangeOnResize);
@@ -552,16 +558,19 @@ HRESULT InitDevice()
 
     // Initialize the view matrix
     XMVECTOR Eye = XMVectorSet(0.0f, 6.0f, -5.0f, 0.0f);
-    XMVECTOR At = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    XMVECTOR At = XMVectorSet(0.0f, 1.0f, 0.0f, 1.0f);
     XMVECTOR Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    g_Eye = Eye;
+    g_At = At;
+    g_Up = Up;
     g_View = XMMatrixLookAtLH(Eye, At, Up);
 
-    CBNeverChanges cbNeverChanges;
-    cbNeverChanges.mView = XMMatrixTranspose(g_View);
-    g_pImmediateContext->UpdateSubresource(g_pCBNeverChanges, 0, nullptr, &cbNeverChanges, 0, 0);
+    CBChangesOnCameraAction cbChangesOnCameraAction;
+    cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
+    g_pImmediateContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
 
     // Initialize the projection matrix
-    g_Projection = XMMatrixPerspectiveFovLH(XM_PIDIV4, width / (FLOAT)height, 0.01f, 100.0f);
+    g_Projection = XMMatrixPerspectiveFovLH(g_Zoom, width / (FLOAT)height, 0.01f, 100.0f);
 
     CBChangeOnResize cbChangesOnResize;
     cbChangesOnResize.mProjection = XMMatrixTranspose(g_Projection);
@@ -580,7 +589,7 @@ void CleanupDevice()
 
     if (g_pSamplerLinear) g_pSamplerLinear->Release();
     if (g_pTextureRV) g_pTextureRV->Release();
-    if (g_pCBNeverChanges) g_pCBNeverChanges->Release();
+    if (g_pCBChangesOnCameraAction) g_pCBChangesOnCameraAction->Release();
     if (g_pCBChangeOnResize) g_pCBChangeOnResize->Release();
     if (g_pCBChangesEveryFrame) g_pCBChangesEveryFrame->Release();
     if (g_pVertexBuffer) g_pVertexBuffer->Release();
@@ -601,6 +610,30 @@ void CleanupDevice()
 
 HRESULT SetView(UINT width, UINT height);
 
+void ChangeViewOnAction(XMVECTOR move) {
+    g_Eye = XMVectorAdd(g_Eye, move);
+    g_At = XMVectorAdd(g_At, move);
+    XMVECTOR Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    g_View = XMMatrixLookAtLH(g_Eye, g_At, Up);
+
+    CBChangesOnCameraAction cbChangesOnCameraAction;
+    cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
+    g_pImmediateContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
+}
+
+void ChangeCameraZoom(float mult){
+    RECT rc;
+    GetClientRect(g_hWnd, &rc);
+    UINT width = rc.right - rc.left;
+    UINT height = rc.bottom - rc.top;
+    g_Zoom *= mult;
+    g_Projection = XMMatrixPerspectiveFovLH(g_Zoom, width / (FLOAT)height, 0.01f, 100.0f);
+
+    CBChangeOnResize cbChangesOnResize;
+    cbChangesOnResize.mProjection = XMMatrixTranspose(g_Projection);
+    g_pImmediateContext->UpdateSubresource(g_pCBChangeOnResize, 0, nullptr, &cbChangesOnResize, 0, 0);
+}
+
 //--------------------------------------------------------------------------------------
 // Called every time the application receives a message
 //--------------------------------------------------------------------------------------
@@ -620,8 +653,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         PostQuitMessage(0);
         break;
 
-        // Note that this tutorial does not handle resizing (WM_SIZE) requests,
-        // so we created the window without the resize border.
     case WM_SIZE:
         if (g_pSwapChain)
         {
@@ -646,19 +677,40 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
 
     case WM_KEYDOWN:
+        float x = 0.0;
+        float y = 0.0;
+        float z = 0.0;
+        XMVECTOR orth = XMVector3Cross(g_At, g_Up);
+        XMVECTOR move = XMVECTOR();
         switch (wParam)
         {
         case VK_LEFT:
             printf("Left is pressed");
+            move = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f) ;
+            ChangeViewOnAction(move);
             break;
         case VK_RIGHT:
+            move = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f) * (-1);
+            ChangeViewOnAction(move);
             printf("Right is pressed");
             break;
         case VK_UP:
+            move = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f) * (-1);
+            ChangeViewOnAction(move);
             printf("Up is pressed");
             break;
         case VK_DOWN:
+            move = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+            ChangeViewOnAction(move);
             printf("Down is pressed");
+            break;
+        case VK_ADD:
+            ChangeCameraZoom(1.25f);
+            printf("Add is pressed");
+            break;
+        case VK_SUBTRACT:
+            ChangeCameraZoom(0.8f);
+            printf("Sub is pressed");
             break;
         }
         break;
@@ -773,7 +825,7 @@ void Render()
     // Render the cube
     //
     g_pImmediateContext->VSSetShader(g_pVertexShader, nullptr, 0);
-    g_pImmediateContext->VSSetConstantBuffers(0, 1, &g_pCBNeverChanges);
+    g_pImmediateContext->VSSetConstantBuffers(0, 1, &g_pCBChangesOnCameraAction);
     g_pImmediateContext->VSSetConstantBuffers(1, 1, &g_pCBChangeOnResize);
     g_pImmediateContext->VSSetConstantBuffers(2, 1, &g_pCBChangesEveryFrame);
     g_pImmediateContext->VSSetConstantBuffers(3, 1, &g_pConstantBuffer);
