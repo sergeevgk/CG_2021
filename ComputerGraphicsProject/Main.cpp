@@ -8,6 +8,7 @@
 #include "resource.h"
 #include "DDSTextureLoader.h"
 #include <stdio.h>
+#define NUM_LIGHTS 3
 
 using namespace DirectX;
 
@@ -22,14 +23,11 @@ struct SimpleVertex
     XMFLOAT3 Tangent;
 };
 
-struct SimpleEye {
-    XMFLOAT3 v;
-};
-
 
 struct CBChangesOnCameraAction
 {
     XMMATRIX mView;
+    XMFLOAT4 Eye;
 };
 
 struct CBChangeOnResize
@@ -43,15 +41,18 @@ struct CBChangesEveryFrame
     XMFLOAT4 vMeshColor;
 };
 
-struct ConstantBuffer
-{
-    XMMATRIX mWorld;
-    XMMATRIX mView;
-    XMMATRIX mProjection;
-    XMFLOAT4 vLightDir[2];
-    XMFLOAT4 vLightColor[2];
+//struct ConstantBuffer
+//{
+//    XMMATRIX mWorld;
+//    XMMATRIX mView;
+//    XMMATRIX mProjection;
+//    XMFLOAT3 vEye;
+//};
+
+struct LightConstantBuffer {
+    XMFLOAT4 vLightPos[3];
+    XMFLOAT4 vLightColor[3];
     XMFLOAT4 vOutputColor;
-    XMFLOAT3 vEye;
 };
 
 
@@ -90,7 +91,8 @@ XMFLOAT4                            g_vMeshColor(0.7f, 0.7f, 0.7f, 1.0f);
 XMVECTOR                            g_Eye;
 XMVECTOR                            g_At;
 XMVECTOR                            g_Up;
-float                               g_Zoom = XM_PIDIV4;
+ID3D11Buffer*                       g_lightColorBuffer = nullptr;
+float                               g_Zoom = XM_PIDIV4 * 2.5;
 
 
 //--------------------------------------------------------------------------------------
@@ -219,6 +221,7 @@ HRESULT CompileShaderFromFile(WCHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szS
     return S_OK;
 }
 
+HRESULT CreateLights();
 
 //--------------------------------------------------------------------------------------
 // Create Direct3D device and swap chain
@@ -459,10 +462,10 @@ HRESULT InitDevice()
     // Create vertex buffer
     SimpleVertex vertices[] =
     {
-        { XMFLOAT3(-1.0f, 1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
-        { XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f),  XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
-        { XMFLOAT3(1.0f, 1.0f, 1.0f), XMFLOAT2(0.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
-        { XMFLOAT3(-1.0f, 1.0f, 1.0f), XMFLOAT2(1.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
+        { XMFLOAT3(-10.0f, 1.0f, -10.0f), XMFLOAT2(1.0f, 0.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
+        { XMFLOAT3(10.0f, 1.0f, -10.0f), XMFLOAT2(0.0f, 0.0f),  XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
+        { XMFLOAT3(10.0f, 1.0f, 10.0f), XMFLOAT2(0.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
+        { XMFLOAT3(-10.0f, 1.0f, 10.0f), XMFLOAT2(1.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
     };
 
 
@@ -509,13 +512,13 @@ HRESULT InitDevice()
     g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     // Create the constant buffers
-    bd.Usage = D3D11_USAGE_DEFAULT;
-    bd.ByteWidth = sizeof(ConstantBuffer);
-    bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    bd.CPUAccessFlags = 0;
-    hr = g_pd3dDevice->CreateBuffer(&bd, nullptr, &g_pConstantBuffer);
+    //bd.Usage = D3D11_USAGE_DEFAULT;
+    ////bd.ByteWidth = sizeof(ConstantBuffer);
+    //bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    //bd.CPUAccessFlags = 0;
+    /*hr = g_pd3dDevice->CreateBuffer(&bd, nullptr, &g_pConstantBuffer);
     if (FAILED(hr))
-        return hr;
+        return hr;*/
     // Create the constant buffers
     //bd.Usage = D3D11_USAGE_DEFAULT;
     bd.ByteWidth = sizeof(CBChangesOnCameraAction);
@@ -557,16 +560,19 @@ HRESULT InitDevice()
     g_World = XMMatrixIdentity();
 
     // Initialize the view matrix
-    XMVECTOR Eye = XMVectorSet(0.0f, 6.0f, -5.0f, 0.0f);
+    XMVECTOR Eye = XMVectorSet(0.0f, 13.0f, -2.5f, 0.0f);
     XMVECTOR At = XMVectorSet(0.0f, 1.0f, 0.0f, 1.0f);
     XMVECTOR Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
     g_Eye = Eye;
     g_At = At;
     g_Up = Up;
     g_View = XMMatrixLookAtLH(Eye, At, Up);
+    XMFLOAT4 tempEye;
+    XMStoreFloat4(&tempEye, g_Eye);
 
     CBChangesOnCameraAction cbChangesOnCameraAction;
     cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
+    cbChangesOnCameraAction.Eye = tempEye;
     g_pImmediateContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
 
     // Initialize the projection matrix
@@ -575,6 +581,8 @@ HRESULT InitDevice()
     CBChangeOnResize cbChangesOnResize;
     cbChangesOnResize.mProjection = XMMatrixTranspose(g_Projection);
     g_pImmediateContext->UpdateSubresource(g_pCBChangeOnResize, 0, nullptr, &cbChangesOnResize, 0, 0);
+
+    CreateLights();
 
     return S_OK;
 }
@@ -615,9 +623,12 @@ void ChangeViewOnAction(XMVECTOR move) {
     g_At = XMVectorAdd(g_At, move);
     XMVECTOR Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
     g_View = XMMatrixLookAtLH(g_Eye, g_At, Up);
+    XMFLOAT4 tempEye;
+    XMStoreFloat4(&tempEye, g_Eye);
 
     CBChangesOnCameraAction cbChangesOnCameraAction;
     cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
+    cbChangesOnCameraAction.Eye = tempEye;
     g_pImmediateContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
 }
 
@@ -656,6 +667,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_SIZE:
         if (g_pSwapChain)
         {
+            ChangeCameraZoom(1.0);
             g_pImmediateContext->OMSetRenderTargets(0, 0, 0);
 
             // Release all outstanding references to the swap chain's buffers.
@@ -686,30 +698,30 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         {
         case VK_LEFT:
             printf("Left is pressed");
-            move = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f) ;
+            move = XMVectorSet(.1f, 0.0f, 0.0f, 0.0f) * (-1);
             ChangeViewOnAction(move);
             break;
         case VK_RIGHT:
-            move = XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f) * (-1);
+            move = XMVectorSet(.1f, 0.0f, 0.0f, 0.0f);
             ChangeViewOnAction(move);
             printf("Right is pressed");
             break;
         case VK_UP:
-            move = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f) * (-1);
+            move = XMVectorSet(0.0f, 0.0f, .1f, 0.0f) ;
             ChangeViewOnAction(move);
             printf("Up is pressed");
             break;
         case VK_DOWN:
-            move = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+            move = XMVectorSet(0.0f, 0.0f, .1f, 0.0f) * (-1);
             ChangeViewOnAction(move);
             printf("Down is pressed");
             break;
         case VK_ADD:
-            ChangeCameraZoom(1.25f);
+            ChangeCameraZoom(0.8f);
             printf("Add is pressed");
             break;
         case VK_SUBTRACT:
-            ChangeCameraZoom(0.8f);
+            ChangeCameraZoom(1.25f);
             printf("Sub is pressed");
             break;
         }
@@ -750,6 +762,44 @@ HRESULT SetView(UINT width, UINT height)
 }
 
 
+HRESULT CreateLights()
+{
+    HRESULT hr = S_OK;
+    DirectX::XMFLOAT4 LightPositions[NUM_LIGHTS] =
+    {
+        DirectX::XMFLOAT4(4.0f, 4.0f, 2.0f, 1.0f),
+        DirectX::XMFLOAT4(0.0f, 4.0f, 0.0f, 1.0f),
+        DirectX::XMFLOAT4(0.0f, 4.0f, 4.0f, 1.0f)
+    };
+
+    DirectX::XMFLOAT4 LightColors[NUM_LIGHTS] =
+    {
+        DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f),
+        DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f),
+        DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f)
+    };
+    /* XMFLOAT4 vLightPos[3];
+    XMFLOAT4 vLightColor[3];
+    XMFLOAT4 vOutputColor;*/
+    LightConstantBuffer lcb1;
+    for (int i = 0; i < NUM_LIGHTS; i++)
+    {
+        lcb1.vLightColor[i] = LightColors[i];
+        lcb1.vLightPos[i] = LightPositions[i];
+    }
+    // Create the constant buffers for lights
+    D3D11_BUFFER_DESC lpbd;
+    ZeroMemory(&lpbd, sizeof(lpbd));
+    lpbd.Usage = D3D11_USAGE_DEFAULT;
+    lpbd.ByteWidth = sizeof(LightConstantBuffer);
+    lpbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    lpbd.CPUAccessFlags = 0;
+    hr = g_pd3dDevice->CreateBuffer(&lpbd, nullptr, &g_lightColorBuffer);
+    if (FAILED(hr))
+        return hr;
+    g_pImmediateContext->UpdateSubresource(g_lightColorBuffer, 0, nullptr, &lcb1, 0, 0);
+    return hr;
+}
 
 
 //--------------------------------------------------------------------------------------
@@ -776,17 +826,7 @@ void Render()
    // g_World = XMMatrixRotationY(t);
 
     // Setup our lighting parameters
-    XMFLOAT4 vLightDirs[2] =
-    {
-        XMFLOAT4(-0.577f, 0.577f, -0.577f, 1.0f),
-        XMFLOAT4(0.0f, 0.0f, -0.5f, 1.0f),
-    };
-    XMFLOAT4 vLightColors[2] =
-    {
-        XMFLOAT4(0.5f, 0.5f, 0.5f, 1.0f),
-        XMFLOAT4(0.5f, 0.0f, 0.0f, 1.0f)
-    };
-
+    
     //
     // Clear the back buffer
     //
@@ -799,7 +839,7 @@ void Render()
 
     // Update matrix variables and lighting variables
     //
-    ConstantBuffer cb1;
+    /*ConstantBuffer cb1;
     cb1.mWorld = XMMatrixTranspose(g_World);
     cb1.mView = XMMatrixTranspose(g_View);
     cb1.mProjection = XMMatrixTranspose(g_Projection);
@@ -807,11 +847,11 @@ void Render()
     cb1.vLightDir[1] = vLightDirs[1];
     cb1.vLightColor[0] = vLightColors[0];
     cb1.vLightColor[1] = vLightColors[1];
-    cb1.vOutputColor = XMFLOAT4(0, 0, 0, 0);
+    cb1.vOutputColor = XMFLOAT4(0, 0, 0, 0);*/
 
-    XMStoreFloat3(&cb1.vEye, g_Eye);
+    //XMStoreFloat3(&cb1.vEye, g_Eye);
 
-    g_pImmediateContext->UpdateSubresource(g_pConstantBuffer, 0, nullptr, &cb1, 0, 0);
+    //g_pImmediateContext->UpdateSubresource(g_pConstantBuffer, 0, nullptr, &cb1, 0, 0);
 
     //
     // Update variables that change once per frame
@@ -828,30 +868,32 @@ void Render()
     g_pImmediateContext->VSSetConstantBuffers(0, 1, &g_pCBChangesOnCameraAction);
     g_pImmediateContext->VSSetConstantBuffers(1, 1, &g_pCBChangeOnResize);
     g_pImmediateContext->VSSetConstantBuffers(2, 1, &g_pCBChangesEveryFrame);
-    g_pImmediateContext->VSSetConstantBuffers(3, 1, &g_pConstantBuffer);
+    g_pImmediateContext->VSSetConstantBuffers(3, 1, &g_lightColorBuffer);
 
     g_pImmediateContext->PSSetShader(g_pPixelShader, nullptr, 0);
     g_pImmediateContext->PSSetConstantBuffers(2, 1, &g_pCBChangesEveryFrame);
     g_pImmediateContext->PSSetShaderResources(0, 1, &g_pTextureRV);
+    g_pImmediateContext->PSSetConstantBuffers(3, 1, &g_lightColorBuffer);
+
     g_pImmediateContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
     g_pImmediateContext->DrawIndexed(36, 0, 0);
 
     // Render each light
     //
-    for (int m = 1; m < 2; m++)
-    {
-        XMMATRIX mLight = XMMatrixTranslationFromVector(5.0f * XMLoadFloat4(&vLightDirs[m]));
-        XMMATRIX mLightScale = XMMatrixScaling(0.2f, 0.2f, 0.2f);
-        mLight = mLightScale * mLight;
+    //for (int m = 1; m < 2; m++)
+    //{
+    //    XMMATRIX mLight = XMMatrixTranslationFromVector(5.0f * XMLoadFloat4(&vLightDirs[m]));
+    //    XMMATRIX mLightScale = XMMatrixScaling(0.2f, 0.2f, 0.2f);
+    //    mLight = mLightScale * mLight;
 
-        // Update the world variable to reflect the current light
-        cb1.mWorld = XMMatrixTranspose(mLight);
-        cb1.vOutputColor = vLightColors[m];
-        g_pImmediateContext->UpdateSubresource(g_pConstantBuffer, 0, nullptr, &cb1, 0, 0);
+    //    // Update the world variable to reflect the current light
+    //    cb1.mWorld = XMMatrixTranspose(mLight);
+    //    cb1.vOutputColor = vLightColors[m];
+    //    g_pImmediateContext->UpdateSubresource(g_pConstantBuffer, 0, nullptr, &cb1, 0, 0);
 
-        //g_pImmediateContext->PSSetShader(g_pPixelShaderSolid, nullptr, 0);
-        g_pImmediateContext->DrawIndexed(36, 0, 0);
-    }
+    //    //g_pImmediateContext->PSSetShader(g_pPixelShaderSolid, nullptr, 0);
+    //    g_pImmediateContext->DrawIndexed(36, 0, 0);
+    //}
 
     //
     // Present our back buffer to our front buffer
