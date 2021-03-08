@@ -8,6 +8,7 @@
 #include "resource.h"
 #include "DDSTextureLoader.h"
 #include <stdio.h>
+#include "camera.cpp"
 #define NUM_LIGHTS 3
 
 using namespace DirectX;
@@ -73,7 +74,6 @@ ID3D11Buffer*                       g_pIndexBuffer = nullptr;
 ID3D11Buffer*                       g_pCBChangesOnCameraAction = nullptr;
 ID3D11Buffer*                       g_pCBChangeOnResize = nullptr;
 ID3D11Buffer*                       g_pCBChangesEveryFrame = nullptr;
-ID3D11Buffer*                       g_pConstantBuffer = nullptr;
 ID3D11ShaderResourceView*           g_pTextureRV = nullptr;
 ID3D11SamplerState*                 g_pSamplerLinear = nullptr;
 XMMATRIX                            g_World;
@@ -85,7 +85,8 @@ XMVECTOR                            g_At;
 XMVECTOR                            g_Up;
 ID3D11Buffer*                       g_lightColorBuffer = nullptr;
 float                               g_Zoom = XM_PIDIV4 * 2.5;
-
+Camera                              camera;
+WorldBorders borders = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 
 //--------------------------------------------------------------------------------------
 // Forward declarations
@@ -487,6 +488,8 @@ HRESULT InitDevice()
         2,1,3,
     };
 
+    // setup camera
+    camera = Camera();
 
     bd.Usage = D3D11_USAGE_DEFAULT;
     bd.ByteWidth = sizeof(WORD) * 36;
@@ -502,7 +505,7 @@ HRESULT InitDevice()
 
     // Set primitive topology
     g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
+    bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     bd.ByteWidth = sizeof(CBChangesOnCameraAction);
     hr = g_pd3dDevice->CreateBuffer(&bd, nullptr, &g_pCBChangesOnCameraAction);
     if (FAILED(hr))
@@ -549,7 +552,7 @@ HRESULT InitDevice()
     g_View = XMMatrixLookAtLH(Eye, At, Up);
     XMFLOAT4 tempEye;
     XMStoreFloat4(&tempEye, g_Eye);
-
+    g_View = camera.getViewMatrix();
     CBChangesOnCameraAction cbChangesOnCameraAction;
     cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
     cbChangesOnCameraAction.Eye = tempEye;
@@ -594,6 +597,8 @@ void CleanupDevice()
     if (g_pImmediateContext) g_pImmediateContext->Release();
     if (g_pd3dDevice1) g_pd3dDevice1->Release();
     if (g_pd3dDevice) g_pd3dDevice->Release();
+    if (g_lightColorBuffer) g_lightColorBuffer->Release();
+
 }
 
 HRESULT SetView(UINT width, UINT height);
@@ -632,6 +637,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     PAINTSTRUCT ps;
     HDC hdc;
+    static POINT cursor;
+    static float mouse_sence = 5e-3f;
+    /*float x = 0.0;
+    float y = 0.0;
+    float z = 0.0;*/
+    float speed = 8.0f;
 
     switch (message)
     {
@@ -669,12 +680,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
 
     case WM_KEYDOWN:
-        float x = 0.0;
-        float y = 0.0;
-        float z = 0.0;
+  
         XMVECTOR orth = XMVector3Cross(g_At, g_Up);
         XMVECTOR move = XMVECTOR();
-        float speed = 8.0f;
         switch (wParam)
         {
         case VK_LEFT:
@@ -701,6 +709,32 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             break;
         }
         break;
+
+    case WM_LBUTTONDOWN:
+        ShowCursor(false);
+        GetCursorPos(&cursor);
+        SetCursorPos(cursor.x, cursor.y);
+        return 0;
+
+    case WM_MOUSEMOVE:
+        if (wParam == MK_LBUTTON)
+        {
+            POINT current_pos;
+            int dx, dy;
+            GetCursorPos(&current_pos);
+            dx = current_pos.x - cursor.x;
+            dy = current_pos.y - cursor.y;
+            SetCursorPos(cursor.x, cursor.y);
+            camera.rotateHorisontal(dx * mouse_sence);
+            if(dy != 0)
+            camera.rotateVertical(dy * mouse_sence);
+        }
+        return 0;
+
+    case WM_LBUTTONUP:
+        SetCursorPos(cursor.x, cursor.y);
+        ShowCursor(true);
+        return 0;
     }
 
     return DefWindowProc(hWnd, message, wParam, lParam);;
@@ -816,6 +850,13 @@ void Render()
     CBChangesEveryFrame cb;
     cb.mWorld = XMMatrixTranspose(g_World);
     cb.vMeshColor = g_vMeshColor;
+
+    g_View = camera.getViewMatrix();
+    CBChangesOnCameraAction cbChangesOnCameraAction;
+    cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
+    g_pImmediateContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
+
+
     g_pImmediateContext->UpdateSubresource(g_pCBChangesEveryFrame, 0, nullptr, &cb, 0, 0);
 
     //
