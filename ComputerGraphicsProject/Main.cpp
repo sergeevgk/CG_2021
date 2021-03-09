@@ -687,19 +687,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         {
         case VK_LEFT:
             move = XMVectorSet(speed * .1f, 0.0f, 0.0f, 0.0f) * (-1);
-            ChangeViewOnAction(move);
+            camera.move(XMVectorGetX(move), XMVectorGetY(move), XMVectorGetZ(move));
             break;
         case VK_RIGHT:
             move = XMVectorSet(speed * .1f, 0.0f, 0.0f, 0.0f);
-            ChangeViewOnAction(move);
+            camera.move(XMVectorGetX(move), XMVectorGetY(move), XMVectorGetZ(move));
             break;
         case VK_UP:
             move = XMVectorSet(0.0f, 0.0f, speed * .1f, 0.0f) ;
-            ChangeViewOnAction(move);
+            camera.move(XMVectorGetX(move), XMVectorGetY(move), XMVectorGetZ(move));
             break;
         case VK_DOWN:
             move = XMVectorSet(0.0f, 0.0f, speed * .1f, 0.0f) * (-1);
-            ChangeViewOnAction(move);
+            camera.move(XMVectorGetX(move), XMVectorGetY(move), XMVectorGetZ(move));
             break;
         case VK_ADD:
             ChangeCameraZoom(0.8f);

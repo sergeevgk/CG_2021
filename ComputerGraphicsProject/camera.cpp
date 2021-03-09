@@ -36,6 +36,7 @@ public:
     void move(float dx = 0.0f, float dy = 0.0f, float dz = 0.0f)
     {
         _pos = XMVectorSet(XMVectorGetX(_pos) + dx, XMVectorGetY(_pos) + dy, XMVectorGetZ(_pos) + dz, 0.0f);
+        _dir = XMVectorSet(XMVectorGetX(_dir) + dx, XMVectorGetY(_dir) + dy, XMVectorGetZ(_dir) + dz, 0.0f);
     }
 
     void moveNormal(float dn)
