@@ -9,6 +9,7 @@
 #include "DDSTextureLoader.h"
 #include <stdio.h>
 #include "camera.cpp"
+#include <string>
 #define NUM_LIGHTS 3
 
 using namespace DirectX;
@@ -65,8 +66,6 @@ IDXGISwapChain1*                    g_pSwapChain1 = nullptr;
 ID3D11RenderTargetView*             g_pRenderTargetView = nullptr;
 ID3D11Texture2D*                    g_pDepthStencil = nullptr;
 ID3D11DepthStencilView*             g_pDepthStencilView = nullptr;
-ID3D11VertexShader*                 g_pVertexShader = nullptr;
-ID3D11PixelShader*                  g_pPixelShader = nullptr;
 //ID3D11PixelShader* g_pPixelShaderSolid = nullptr;
 ID3D11InputLayout*                  g_pVertexLayout = nullptr;
 ID3D11Buffer*                       g_pVertexBuffer = nullptr;
@@ -87,6 +86,15 @@ ID3D11Buffer*                       g_lightColorBuffer = nullptr;
 float                               g_Zoom = XM_PIDIV4 * 2.5;
 Camera                              camera;
 WorldBorders borders = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+
+
+ID3D11VertexShader* g_pVertexShader = nullptr;
+ID3D11PixelShader* g_pPixelShader = nullptr;
+
+ID3D11VertexShader* g_pVertexPostShader = nullptr;
+ID3D11PixelShader*  g_pCopyPixelPostShader = nullptr;
+ID3D11PixelShader*  g_pLuminancePixelPostShader = nullptr;
+ID3D11PixelShader* g_pTonemapPixelPostShader = nullptr;
 
 //--------------------------------------------------------------------------------------
 // Forward declarations
@@ -135,6 +143,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
 
     return (int)msg.wParam;
 }
+
 
 
 //--------------------------------------------------------------------------------------
@@ -215,6 +224,105 @@ HRESULT CompileShaderFromFile(WCHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szS
 }
 
 HRESULT CreateLights();
+
+HRESULT CreatePS(WCHAR* fileName, std::string shaderName, ID3D11PixelShader** pixelShader);
+HRESULT CreateVS(WCHAR* fileName, std::string shaderName, ID3D11VertexShader** vertexShader, ID3DBlob** pVSBlob);
+
+HRESULT CreateProcessShaders() {
+    // Compile the vertex shader
+    HRESULT hr;
+    ID3DBlob* pVSBlob = nullptr;
+    hr = CreateVS(L"PS_VS.fx", "VS", &g_pVertexShader, &pVSBlob);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    // Define the input layout
+    D3D11_INPUT_ELEMENT_DESC layout[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0},
+    };
+    UINT numElements = ARRAYSIZE(layout);
+
+    // Create the input layout
+    hr = g_pd3dDevice->CreateInputLayout(layout, numElements, pVSBlob->GetBufferPointer(),
+        pVSBlob->GetBufferSize(), &g_pVertexLayout);
+    pVSBlob->Release();
+    if (FAILED(hr))
+        return hr;
+
+    // Set the input layout
+    g_pImmediateContext->IASetInputLayout(g_pVertexLayout);
+
+    hr = CreatePS(L"PS_VS.fx", "PS", &g_pPixelShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+}
+
+HRESULT CreatePostProcessShaders() {
+
+    HRESULT hr;
+    ID3DBlob* pVSBlob = nullptr;
+    hr = CreateVS(L"TonemapShader.fx", "vs_copy_main", &g_pVertexPostShader, &pVSBlob);
+    if (FAILED(hr)) {
+        return hr;
+    }
+    hr = CreatePS(L"TonemapShader.fx", "ps_copy_main", &g_pCopyPixelPostShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+    hr = CreatePS(L"TonemapShader.fx", "ps_luminance_main", &g_pLuminancePixelPostShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+    hr = CreatePS(L"TonemapShader.fx", "ps_tonemap_main", &g_pTonemapPixelPostShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+}
+
+HRESULT CreatePS(WCHAR* fileName, std::string shaderName, ID3D11PixelShader** pixelShader) {
+    // Compile the pixel shader
+    ID3DBlob* pPSBlob = nullptr;
+    HRESULT hr;
+    hr = CompileShaderFromFile(fileName, shaderName.c_str(), "ps_4_0", &pPSBlob);
+    if (FAILED(hr))
+    {
+        MessageBox(nullptr,
+            L"The FX file cannot be compiled.  Please run this executable from the directory that contains the FX file.", L"Error", MB_OK);
+        return hr;
+    }
+
+    // Create the pixel shader
+    hr = g_pd3dDevice->CreatePixelShader(pPSBlob->GetBufferPointer(), pPSBlob->GetBufferSize(), nullptr, pixelShader);
+    pPSBlob->Release();
+    if (FAILED(hr))
+        return hr;
+}
+
+HRESULT CreateVS(WCHAR* fileName, std::string shaderName, ID3D11VertexShader** vertexShader, ID3DBlob** pVSBlob) {
+
+    // Compile the pixel shader
+    HRESULT hr;
+    hr = CompileShaderFromFile(fileName, shaderName.c_str(), "vs_4_0", pVSBlob);
+    if (FAILED(hr))
+    {
+        MessageBox(nullptr,
+            L"The FX file cannot be compiled.  Please run this executable from the directory that contains the FX file.", L"Error", MB_OK);
+        return hr;
+    }
+
+    // Create the pixel shader
+    hr = g_pd3dDevice->CreateVertexShader((*pVSBlob)->GetBufferPointer(), (*pVSBlob)->GetBufferSize(), nullptr, vertexShader);
+    if (FAILED(hr)) {
+        (*pVSBlob)->Release();
+        return hr;
+    }
+}
 
 //--------------------------------------------------------------------------------------
 // Create Direct3D device and swap chain
@@ -398,59 +506,10 @@ HRESULT InitDevice()
     vp.TopLeftY = 0;
     g_pImmediateContext->RSSetViewports(1, &vp);
 
-    // Compile the vertex shader
-    ID3DBlob* pVSBlob = nullptr;
-    hr = CompileShaderFromFile(L"PS_VS.fx", "VS", "vs_4_0", &pVSBlob);
-    if (FAILED(hr))
-    {
-        MessageBox(nullptr,
-            L"The FX file cannot be compiled.  Please run this executable from the directory that contains the FX file.", L"Error", MB_OK);
-        return hr;
-    }
-
-    // Create the vertex shader
-    hr = g_pd3dDevice->CreateVertexShader(pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), nullptr, &g_pVertexShader);
-    if (FAILED(hr))
-    {
-        pVSBlob->Release();
-        return hr;
-    }
-
-    // Define the input layout
-    D3D11_INPUT_ELEMENT_DESC layout[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0},
-        { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0},
-    };
-    UINT numElements = ARRAYSIZE(layout);
-
-    // Create the input layout
-    hr = g_pd3dDevice->CreateInputLayout(layout, numElements, pVSBlob->GetBufferPointer(),
-        pVSBlob->GetBufferSize(), &g_pVertexLayout);
-    pVSBlob->Release();
-    if (FAILED(hr))
-        return hr;
-
-    // Set the input layout
-    g_pImmediateContext->IASetInputLayout(g_pVertexLayout);
-
-    // Compile the pixel shader
-    ID3DBlob* pPSBlob = nullptr;
-    hr = CompileShaderFromFile(L"PS_VS.fx", "PS", "ps_4_0", &pPSBlob);
-    if (FAILED(hr))
-    {
-        MessageBox(nullptr,
-            L"The FX file cannot be compiled.  Please run this executable from the directory that contains the FX file.", L"Error", MB_OK);
-        return hr;
-    }
-
-    // Create the pixel shader
-    hr = g_pd3dDevice->CreatePixelShader(pPSBlob->GetBufferPointer(), pPSBlob->GetBufferSize(), nullptr, &g_pPixelShader);
-    pPSBlob->Release();
-    if (FAILED(hr))
-        return hr;
+    ///
+    CreateProcessShaders();
+    CreatePostProcessShaders();
+    //////
 
     // Create vertex buffer
     SimpleVertex vertices[] =
