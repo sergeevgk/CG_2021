@@ -142,7 +142,6 @@ float4 PS(PS_INPUT input) : SV_Target
     color1 = vLightColor[0] * atten1 * bright1 * (1 + dot(input.normal, lightDir1) + pow(dot(input.normal, h1), p1));
     color2 = vLightColor[1] * atten2 * bright2 * (1 + dot(input.normal, lightDir2) + pow(dot(input.normal, h2), p2));
     color3 = vLightColor[2] * atten3 * bright3 * (1 + dot(input.normal, lightDir3) + pow(dot(input.normal, h3), p3));
-
     return txDiffuse.Sample(samLinear, input.Tex) * (color1 + color2 + color3);
 
 }

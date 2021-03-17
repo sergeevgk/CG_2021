@@ -93,7 +93,7 @@ XMVECTOR                            g_At;
 XMVECTOR                            g_Up;
 float                               g_Zoom = XM_PIDIV4 * 2.5;
 Camera                              camera;
-
+UINT32 m_indexCount;
 ID3D11VertexShader* g_pVertexShader = nullptr;
 ID3D11PixelShader* g_pPixelShader = nullptr;
 ID3D11VertexShader* g_pVertexPostShader = nullptr;
@@ -489,23 +489,43 @@ HRESULT InitDevice()
     CreatePostProcessShaders();
 
     // Create vertex buffer
-    SimpleVertex vertices[] =
+    const int numLines = 16;
+    const float spacing = 1.0f / numLines;
+    const float sphereRadius = 1.0f;
+    // Create vertex buffer
+    std::vector<SimpleVertex> vertices;
+    for (int latitude = 0; latitude <= numLines; latitude++)
     {
-        { XMFLOAT3(-20.0f, 1.0f, -20.0f), XMFLOAT2(1.0f, 0.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
-        { XMFLOAT3(20.0f, 1.0f, -20.0f), XMFLOAT2(0.0f, 0.0f),  XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
-        { XMFLOAT3(20.0f, 1.0f, 20.0f), XMFLOAT2(0.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
-        { XMFLOAT3(-20.0f, 1.0f, 20.0f), XMFLOAT2(1.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
-    };
+        for (int longitude = 0; longitude <= numLines; longitude++)
+        {
+            SimpleVertex v;
+
+            v.Tex = DirectX::XMFLOAT2(longitude * spacing, 1.0f - latitude * spacing);
+
+            float theta = v.Tex.x * 2.0f * static_cast<float>(3.14f);
+            float phi = (v.Tex.y - 0.5f) * static_cast<float>(3.14f);
+            float c = static_cast<float>(cos(phi));
+
+            v.Normal = DirectX::XMFLOAT3(
+                c * static_cast<float>(cos(theta)) * sphereRadius,
+                static_cast<float>(sin(phi)) * sphereRadius,
+                c * static_cast<float>(sin(theta)) * sphereRadius
+            );
+            v.Pos = DirectX::XMFLOAT3(v.Normal.x * sphereRadius, v.Normal.y * sphereRadius, v.Normal.z * sphereRadius);
+
+            vertices.push_back(v);
+        }
+    }
 
     D3D11_BUFFER_DESC bd;
     ZeroMemory(&bd, sizeof(bd));
     bd.Usage = D3D11_USAGE_DEFAULT;
-    bd.ByteWidth = sizeof(SimpleVertex) * 24;
+    bd.ByteWidth = sizeof(SimpleVertex) * static_cast<UINT>(vertices.size());
     bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
     bd.CPUAccessFlags = 0;
     D3D11_SUBRESOURCE_DATA InitData;
     ZeroMemory(&InitData, sizeof(InitData));
-    InitData.pSysMem = vertices;
+    InitData.pSysMem = vertices.data();
     hr = g_pd3dDevice->CreateBuffer(&bd, &InitData, &g_pVertexBuffer);
     if (FAILED(hr))
         return hr;
@@ -517,20 +537,29 @@ HRESULT InitDevice()
 
     // Create index buffer
     // Create vertex buffer
-    WORD indices[] =
+    std::vector<WORD> indices;
+    for (int latitude = 0; latitude < numLines; latitude++)
     {
-        3,1,0,
-        2,1,3,
-    };
+        for (int longitude = 0; longitude < numLines; longitude++)
+        {
+            indices.push_back(latitude * (numLines + 1) + longitude);
+            indices.push_back((latitude + 1) * (numLines + 1) + longitude);
+            indices.push_back(latitude * (numLines + 1) + (longitude + 1));
+
+            indices.push_back(latitude * (numLines + 1) + (longitude + 1));
+            indices.push_back((latitude + 1) * (numLines + 1) + longitude);
+            indices.push_back((latitude + 1) * (numLines + 1) + (longitude + 1));
+        }
+    }
 
     // setup camera
     camera = Camera();
-
+    m_indexCount = static_cast<UINT32>(indices.size());
     bd.Usage = D3D11_USAGE_DEFAULT;
-    bd.ByteWidth = sizeof(WORD) * 36;
+    bd.ByteWidth = sizeof(WORD) * m_indexCount;
     bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
     bd.CPUAccessFlags = 0;
-    InitData.pSysMem = indices;
+    InitData.pSysMem = indices.data();
     hr = g_pd3dDevice->CreateBuffer(&bd, &InitData, &g_pIndexBuffer);
     if (FAILED(hr))
         return hr;
@@ -995,7 +1024,7 @@ void Render()
     // Set the input layout
     g_pImmediateContext->IASetInputLayout(g_pVertexLayout);
     //
-    // Render the cube
+    // Render
     //
     g_pImmediateContext->VSSetShader(g_pVertexShader, nullptr, 0);
     g_pImmediateContext->VSSetConstantBuffers(0, 1, &g_pCBChangesOnCameraAction);
@@ -1009,7 +1038,7 @@ void Render()
     g_pImmediateContext->PSSetShaderResources(0, 1, &g_pTextureRV);
 
     g_pImmediateContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
-    g_pImmediateContext->DrawIndexed(6, 0, 0);
+    g_pImmediateContext->DrawIndexed(m_indexCount, 0, 0);
 
     PostRender();
 
