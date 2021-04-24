@@ -13,6 +13,7 @@
 #include <cmath>
 #include "AverageBrightnessProcess.h"
 #include "ToneMapProcess.h"
+
 #define NUM_LIGHTS 3
 
 using namespace DirectX;
@@ -93,6 +94,7 @@ XMVECTOR                            g_At;
 XMVECTOR                            g_Up;
 float                               g_Zoom = XM_PIDIV4 * 2.5;
 Camera                              camera;
+WorldBorders                        g_Borders;
 UINT32 m_indexCount;
 ID3D11VertexShader* g_pVertexShader = nullptr;
 ID3D11PixelShader* g_pPixelShader = nullptr;
@@ -108,6 +110,8 @@ D3D11_VIEWPORT vp;
 
 AverageBrightnessProcess* g_pAvLumProc = nullptr;
 ToneMapProcess* g_pToneMapProc = nullptr;
+
+
 
 //--------------------------------------------------------------------------------------
 // Forward declarations
@@ -488,6 +492,12 @@ HRESULT InitDevice()
     CreateProcessShaders();
     CreatePostProcessShaders();
 
+    // setup camera
+    camera = Camera();
+
+    g_Borders.Min = { -100.0f, -100.0f, -100.0f };
+    g_Borders.Max = { 100.0f, 100.0f, 100.0f };
+
     // Create vertex buffer
     const int numLines = 16;
     const float spacing = 1.0f / numLines;
@@ -535,8 +545,6 @@ HRESULT InitDevice()
     UINT offset = 0;
     g_pImmediateContext->IASetVertexBuffers(0, 1, &g_pVertexBuffer, &stride, &offset);
 
-    // Create index buffer
-    // Create vertex buffer
     std::vector<WORD> indices;
     for (int latitude = 0; latitude < numLines; latitude++)
     {
@@ -552,8 +560,6 @@ HRESULT InitDevice()
         }
     }
 
-    // setup camera
-    camera = Camera();
     m_indexCount = static_cast<UINT32>(indices.size());
     bd.Usage = D3D11_USAGE_DEFAULT;
     bd.ByteWidth = sizeof(WORD) * m_indexCount;
@@ -608,18 +614,11 @@ HRESULT InitDevice()
 
     // Initialize the world matrices
     g_World = XMMatrixIdentity();
-
-    // Initialize the view matrix
-    XMVECTOR Eye = XMVectorSet(0.0f, 13.0f, -2.5f, 0.0f);
-    XMVECTOR At = XMVectorSet(0.0f, 1.0f, 0.0f, 1.0f);
-    XMVECTOR Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    g_Eye = Eye;
-    g_At = At;
-    g_Up = Up;
-    g_View = XMMatrixLookAtLH(Eye, At, Up);
-    XMFLOAT4 tempEye;
-    XMStoreFloat4(&tempEye, g_Eye);
     g_View = camera.GetViewMatrix();
+
+    XMFLOAT4 tempEye;
+    XMStoreFloat4(&tempEye, camera.Pos);
+
     CBChangesOnCameraAction cbChangesOnCameraAction;
     cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
     cbChangesOnCameraAction.Eye = tempEye;
@@ -736,6 +735,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     static POINT cursor;
     static float mouse_sence = 5e-3f;
     float speed = 8.0f;
+    float moveUnit = 0.1f;
 
     switch (message)
     {
@@ -775,24 +775,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_KEYDOWN:
 
         XMVECTOR orth = XMVector3Cross(g_At, g_Up);
-        XMVECTOR move = XMVECTOR();
         switch (wParam)
         {
         case VK_LEFT:
-            move = XMVectorSet(speed * .1f, 0.0f, 0.0f, 0.0f) * (-1);
-            camera.Move(XMVectorGetX(move), XMVectorGetY(move), XMVectorGetZ(move));
+            camera.MoveTangent(-moveUnit);
+            camera.PositionClip(g_Borders);
             break;
         case VK_RIGHT:
-            move = XMVectorSet(speed * .1f, 0.0f, 0.0f, 0.0f);
-            camera.Move(XMVectorGetX(move), XMVectorGetY(move), XMVectorGetZ(move));
+            camera.MoveTangent(moveUnit);
+            camera.PositionClip(g_Borders);
             break;
         case VK_UP:
-            move = XMVectorSet(0.0f, 0.0f, speed * .1f, 0.0f);
-            camera.Move(XMVectorGetX(move), XMVectorGetY(move), XMVectorGetZ(move));
+            camera.MoveNormal(moveUnit);
+            camera.PositionClip(g_Borders);
             break;
         case VK_DOWN:
-            move = XMVectorSet(0.0f, 0.0f, speed * .1f, 0.0f) * (-1);
-            camera.Move(XMVectorGetX(move), XMVectorGetY(move), XMVectorGetZ(move));
+            camera.MoveNormal(-moveUnit);
+            camera.PositionClip(g_Borders);
             break;
         case VK_ADD:
             ChangeCameraZoom(0.8f);
@@ -804,26 +803,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
 
     case WM_LBUTTONDOWN:
+        //while (ShowCursor(false) >= 0);
         ShowCursor(false);
         GetCursorPos(&cursor);
-        SetCursorPos(cursor.x, cursor.y);
+        //SetCursorPos(cursor.x, cursor.y);
         return 0;
 
     case WM_MOUSEMOVE:
         if (wParam == MK_LBUTTON)
         {
             POINT current_pos;
-            int dx, dy;
             GetCursorPos(&current_pos);
-            dx = current_pos.x - cursor.x;
-            dy = current_pos.y - cursor.y;
-            SetCursorPos(cursor.x, cursor.y);
+            int dx = current_pos.x - cursor.x;
+            int dy = current_pos.y - cursor.y;
             camera.RotateHorisontal(dx * mouse_sence);
-            if (dy != 0)
-            {
-                camera.RotateVertical(dy * mouse_sence);
-            }
+            camera.RotateVertical(dy * mouse_sence);
+            SetCursorPos(cursor.x, cursor.y);
         }
+
         return 0;
 
     case WM_LBUTTONUP:

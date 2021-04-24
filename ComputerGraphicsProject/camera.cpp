@@ -1,56 +1,56 @@
-#include <windows.h>
-#include <DirectXColors.h>
-#include <minwindef.h>
 #include "Camera.h"
+#include <algorithm>
 using namespace DirectX;
 
 Camera::Camera()
 {
-    pos = XMVectorSet(0.0f, 13.0f, -2.5f, 0.0f);
-    dir = XMVectorSet(0.0f, 1.0f, 0.0f, 1.0f);
-    up = XMVectorSet(0.0f, 1.0f, 1.0f, 0.0f);
+    Pos = XMVectorSet(0.0f, 4.0f, 1.0f, 0.0f);
+    Dir = XMVectorSet(-1.0f, -9.0f, -5.0f, 0.0f);
+    Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 }
 
 XMMATRIX Camera::GetViewMatrix()
 {
-    XMVECTOR focus = XMVectorAdd(pos, dir);
-    return XMMatrixLookAtLH(pos, dir, up);
+    XMVECTOR focus = XMVectorAdd(Pos, Dir);
+    return XMMatrixLookAtLH(Pos, focus, Up);
 }
 
-void Camera::Move(float dx, float dy, float dz)
+void Camera::Move(const XMVECTOR& dv)
 {
-    pos = XMVectorSet(XMVectorGetX(pos) + dx, XMVectorGetY(pos) + dy, XMVectorGetZ(pos) + dz, 0.0f);
-    dir = XMVectorSet(XMVectorGetX(dir) + dx, XMVectorGetY(dir) + dy, XMVectorGetZ(dir) + dz, 0.0f);
+    Pos = Pos + dv;
 }
 
 void Camera::MoveNormal(float dn)
 {
-    pos = XMVectorAdd(pos, XMVectorScale(dir, dn));
+    Pos += dn * Dir;
 }
 
 void Camera::MoveTangent(float dt)
 {
     XMVECTOR tangent = getTangentVector();
-    pos = XMVectorAdd(pos, XMVectorScale(tangent, dt));
+    Pos = XMVectorAdd(Pos, XMVectorScale(tangent, dt));
 }
 
 void Camera::RotateHorisontal(float angle)
 {
-    XMVECTOR rotation = XMQuaternionRotationAxis(up, angle);
-    dir = XMVector3Rotate(dir, rotation);
+    XMVECTOR rotation = XMQuaternionRotationAxis(Up, angle);
+    Dir = XMVector3Rotate(Dir, rotation);
 }
 
 void Camera::RotateVertical(float angle)
 {
-    XMVECTOR tangent = getTangentVector();
-    angle = min(angle, XM_PIDIV2 - verticalAngle);
-    angle = max(angle, -XM_PIDIV2 - verticalAngle);
+    angle = std::clamp(angle, -XM_PIDIV2 - verticalAngle, XM_PIDIV2 - verticalAngle);
     verticalAngle += angle;
-    XMVECTOR rotation = XMQuaternionRotationAxis(-tangent, angle);
-    dir = XMVector3Rotate(dir, rotation);
+    auto t = -getTangentVector();
+    XMVECTOR v = XMQuaternionRotationAxis(t, angle);
+    Dir = XMVector3Rotate(Dir,v);
 }
 
 XMVECTOR Camera::getTangentVector()
 {
-    return XMVector4Normalize(XMVector3Cross(dir, up));
+    return XMVector3Normalize(XMVector3Cross(Dir, Up));
+}
+
+void Camera::PositionClip(const WorldBorders& b) {
+    Pos = XMVectorClamp(Pos, b.Min, b.Max);
 }
