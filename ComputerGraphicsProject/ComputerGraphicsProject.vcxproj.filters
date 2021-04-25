@@ -14,6 +14,9 @@
       <Filter>Camera</Filter>
     </ClCompile>
     <ClCompile Include="WorldBorders.h" />
+    <ClCompile Include="Sphere.cpp">
+      <Filter>Sphere</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DDSTextureLoader.h" />
@@ -24,6 +27,11 @@
     <ClInclude Include="Camera.h">
       <Filter>Camera</Filter>
     </ClInclude>
+    <ClInclude Include="RenderMode.h" />
+    <ClInclude Include="Sphere.h">
+      <Filter>Sphere</Filter>
+    </ClInclude>
+    <ClInclude Include="SimpleVertex.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resource.rc" />
@@ -31,6 +39,9 @@
   <ItemGroup>
     <Filter Include="Camera">
       <UniqueIdentifier>{8b3f778c-1a95-41a4-b41a-cf0d503f4bd1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Sphere">
+      <UniqueIdentifier>{78a8ebb1-49fc-4dab-8b5b-05f4f4991c96}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

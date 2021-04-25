@@ -376,6 +376,7 @@
     <ClCompile Include="DDSTextureLoader.cpp" />
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="RenderTexture.cpp" />
+    <ClCompile Include="Sphere.cpp" />
     <ClCompile Include="ToneMapProcess.cpp" />
     <ClCompile Include="WorldBorders.h" />
   </ItemGroup>
@@ -383,8 +384,11 @@
     <ClInclude Include="AverageBrightnessProcess.h" />
     <ClInclude Include="Camera.h" />
     <ClInclude Include="DDSTextureLoader.h" />
+    <ClInclude Include="RenderMode.h" />
     <ClInclude Include="RenderTexture.h" />
     <CLInclude Include="resource.h" />
+    <ClInclude Include="SimpleVertex.h" />
+    <ClInclude Include="Sphere.h" />
     <ClInclude Include="ToneMapProcess.h" />
     <ResourceCompile Include="resource.rc" />
   </ItemGroup>

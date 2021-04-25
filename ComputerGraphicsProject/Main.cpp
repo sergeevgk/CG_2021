@@ -13,6 +13,9 @@
 #include <cmath>
 #include "AverageBrightnessProcess.h"
 #include "ToneMapProcess.h"
+#include "RenderMode.h"
+#include "SimpleVertex.h"
+#include "Sphere.h"
 
 #define NUM_LIGHTS 3
 
@@ -22,13 +25,6 @@ using namespace std;
 //--------------------------------------------------------------------------------------
 // Structures
 //--------------------------------------------------------------------------------------
-struct SimpleVertex
-{
-    XMFLOAT3 Pos;
-    XMFLOAT2 Tex;
-    XMFLOAT3 Normal;
-    XMFLOAT3 Tangent;
-};
 
 struct CBChangesOnCameraAction
 {
@@ -66,15 +62,15 @@ HWND                                g_hWnd = nullptr;
 D3D_DRIVER_TYPE                     g_driverType = D3D_DRIVER_TYPE_NULL;
 D3D_FEATURE_LEVEL                   g_featureLevel = D3D_FEATURE_LEVEL_11_0;
 ID3D11Device* g_pd3dDevice = nullptr;
-ID3D11DeviceContext* g_pImmediateContext = nullptr;
+ID3D11DeviceContext* deviceContext = nullptr;
 IDXGISwapChain* g_pSwapChain = nullptr;
-ID3D11RenderTargetView* g_pRenderTargetView = nullptr;
+ID3D11RenderTargetView* renderTargetView = nullptr;
 ID3D11Texture2D* g_pDepthStencil = nullptr;
-ID3D11DepthStencilView* g_pDepthStencilView = nullptr;
+ID3D11DepthStencilView* depthStencilView = nullptr;
 RenderTexture* g_pRenderTexture = nullptr;
-ID3D11InputLayout* g_pVertexLayout = nullptr;
+ID3D11InputLayout* inputVertexLayout = nullptr;
 
-ID3D11Buffer* g_pVertexBuffer = nullptr;
+ID3D11Buffer* vertexBuffer = nullptr;
 ID3D11Buffer* g_pIndexBuffer = nullptr;
 ID3D11Buffer* g_pCBChangesOnCameraAction = nullptr;
 ID3D11Buffer* g_pCBChangeOnResize = nullptr;
@@ -111,7 +107,18 @@ D3D11_VIEWPORT vp;
 AverageBrightnessProcess* g_pAvLumProc = nullptr;
 ToneMapProcess* g_pToneMapProc = nullptr;
 
+RenderMode renderMode = RenderMode::PBR;
 
+ID3D11DepthStencilState* depthStencilState = nullptr;
+
+ID3D11PixelShader* pbrPS = nullptr;
+ID3D11PixelShader* normalDistPS = nullptr;
+ID3D11PixelShader* geometryPS = nullptr;
+ID3D11PixelShader* fresnelPS = nullptr;
+
+UINT vertexStride;
+UINT vertexOffset;
+UINT envIndicesNumber;
 
 //--------------------------------------------------------------------------------------
 // Forward declarations
@@ -261,13 +268,13 @@ HRESULT CreateProcessShaders() {
 
     // Create the input layout
     hr = g_pd3dDevice->CreateInputLayout(layout, numElements, pVSBlob->GetBufferPointer(),
-        pVSBlob->GetBufferSize(), &g_pVertexLayout);
+        pVSBlob->GetBufferSize(), &inputVertexLayout);
     pVSBlob->Release();
     if (FAILED(hr))
         return hr;
 
     // Set the input layout
-    g_pImmediateContext->IASetInputLayout(g_pVertexLayout);
+    deviceContext->IASetInputLayout(inputVertexLayout);
 
     hr = CreatePS(L"PS_VS.fx", "PS", &g_pPixelShader);
     if (FAILED(hr)) {
@@ -378,13 +385,13 @@ HRESULT InitDevice()
     {
         g_driverType = driverTypes[driverTypeIndex];
         hr = D3D11CreateDevice(nullptr, g_driverType, nullptr, createDeviceFlags, featureLevels, numFeatureLevels,
-            D3D11_SDK_VERSION, &g_pd3dDevice, &g_featureLevel, &g_pImmediateContext);
+            D3D11_SDK_VERSION, &g_pd3dDevice, &g_featureLevel, &deviceContext);
 
         if (hr == E_INVALIDARG)
         {
             // DirectX 11.0 platforms will not recognize D3D_FEATURE_LEVEL_11_1 so we need to retry without it
             hr = D3D11CreateDevice(nullptr, g_driverType, nullptr, createDeviceFlags, &featureLevels[1], numFeatureLevels - 1,
-                D3D11_SDK_VERSION, &g_pd3dDevice, &g_featureLevel, &g_pImmediateContext);
+                D3D11_SDK_VERSION, &g_pd3dDevice, &g_featureLevel, &deviceContext);
         }
 
         if (SUCCEEDED(hr))
@@ -445,7 +452,7 @@ HRESULT InitDevice()
     if (FAILED(hr))
         return hr;
 
-    hr = g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_pRenderTargetView);
+    hr = g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &renderTargetView);
     pBackBuffer->Release();
     if (FAILED(hr))
         return hr;
@@ -474,11 +481,11 @@ HRESULT InitDevice()
     descDSV.Format = descDepth.Format;
     descDSV.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
     descDSV.Texture2D.MipSlice = 0;
-    hr = g_pd3dDevice->CreateDepthStencilView(g_pDepthStencil, &descDSV, &g_pDepthStencilView);
+    hr = g_pd3dDevice->CreateDepthStencilView(g_pDepthStencil, &descDSV, &depthStencilView);
     if (FAILED(hr))
         return hr;
 
-    g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, g_pDepthStencilView);
+    deviceContext->OMSetRenderTargets(1, &renderTargetView, depthStencilView);
 
     // Setup the viewport
     vp.Width = (FLOAT)width;
@@ -487,7 +494,7 @@ HRESULT InitDevice()
     vp.MaxDepth = 1.0f;
     vp.TopLeftX = 0;
     vp.TopLeftY = 0;
-    g_pImmediateContext->RSSetViewports(1, &vp);
+    deviceContext->RSSetViewports(1, &vp);
 
     CreateProcessShaders();
     CreatePostProcessShaders();
@@ -498,34 +505,9 @@ HRESULT InitDevice()
     g_Borders.Min = { -100.0f, -100.0f, -100.0f };
     g_Borders.Max = { 100.0f, 100.0f, 100.0f };
 
-    // Create vertex buffer
-    const int numLines = 16;
-    const float spacing = 1.0f / numLines;
-    const float sphereRadius = 1.0f;
-    // Create vertex buffer
-    std::vector<SimpleVertex> vertices;
-    for (int latitude = 0; latitude <= numLines; latitude++)
-    {
-        for (int longitude = 0; longitude <= numLines; longitude++)
-        {
-            SimpleVertex v;
-
-            v.Tex = DirectX::XMFLOAT2(longitude * spacing, 1.0f - latitude * spacing);
-
-            float theta = v.Tex.x * 2.0f * static_cast<float>(3.14f);
-            float phi = (v.Tex.y - 0.5f) * static_cast<float>(3.14f);
-            float c = static_cast<float>(cos(phi));
-
-            v.Normal = DirectX::XMFLOAT3(
-                c * static_cast<float>(cos(theta)) * sphereRadius,
-                static_cast<float>(sin(phi)) * sphereRadius,
-                c * static_cast<float>(sin(theta)) * sphereRadius
-            );
-            v.Pos = DirectX::XMFLOAT3(v.Normal.x * sphereRadius, v.Normal.y * sphereRadius, v.Normal.z * sphereRadius);
-
-            vertices.push_back(v);
-        }
-    }
+    Sphere sphere = Sphere();
+    auto vertices = sphere.vertices;
+    auto indices = sphere.indices;
 
     D3D11_BUFFER_DESC bd;
     ZeroMemory(&bd, sizeof(bd));
@@ -536,29 +518,14 @@ HRESULT InitDevice()
     D3D11_SUBRESOURCE_DATA InitData;
     ZeroMemory(&InitData, sizeof(InitData));
     InitData.pSysMem = vertices.data();
-    hr = g_pd3dDevice->CreateBuffer(&bd, &InitData, &g_pVertexBuffer);
+    hr = g_pd3dDevice->CreateBuffer(&bd, &InitData, &vertexBuffer);
     if (FAILED(hr))
         return hr;
 
     // Set vertex buffer
     UINT stride = sizeof(SimpleVertex);
     UINT offset = 0;
-    g_pImmediateContext->IASetVertexBuffers(0, 1, &g_pVertexBuffer, &stride, &offset);
-
-    std::vector<WORD> indices;
-    for (int latitude = 0; latitude < numLines; latitude++)
-    {
-        for (int longitude = 0; longitude < numLines; longitude++)
-        {
-            indices.push_back(latitude * (numLines + 1) + longitude);
-            indices.push_back((latitude + 1) * (numLines + 1) + longitude);
-            indices.push_back(latitude * (numLines + 1) + (longitude + 1));
-
-            indices.push_back(latitude * (numLines + 1) + (longitude + 1));
-            indices.push_back((latitude + 1) * (numLines + 1) + longitude);
-            indices.push_back((latitude + 1) * (numLines + 1) + (longitude + 1));
-        }
-    }
+    deviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
 
     m_indexCount = static_cast<UINT32>(indices.size());
     bd.Usage = D3D11_USAGE_DEFAULT;
@@ -571,10 +538,10 @@ HRESULT InitDevice()
         return hr;
 
     // Set index buffer
-    g_pImmediateContext->IASetIndexBuffer(g_pIndexBuffer, DXGI_FORMAT_R16_UINT, 0);
+    deviceContext->IASetIndexBuffer(g_pIndexBuffer, DXGI_FORMAT_R16_UINT, 0);
 
     // Set primitive topology
-    g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     bd.ByteWidth = sizeof(CBChangesOnCameraAction);
     hr = g_pd3dDevice->CreateBuffer(&bd, nullptr, &g_pCBChangesOnCameraAction);
@@ -622,14 +589,14 @@ HRESULT InitDevice()
     CBChangesOnCameraAction cbChangesOnCameraAction;
     cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
     cbChangesOnCameraAction.Eye = tempEye;
-    g_pImmediateContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
+    deviceContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
 
     // Initialize the projection matrix
     g_Projection = XMMatrixPerspectiveFovLH(g_Zoom, width / (FLOAT)height, 0.01f, 100.0f);
 
     CBChangeOnResize cbChangesOnResize;
     cbChangesOnResize.mProjection = XMMatrixTranspose(g_Projection);
-    g_pImmediateContext->UpdateSubresource(g_pCBChangeOnResize, 0, nullptr, &cbChangesOnResize, 0, 0);
+    deviceContext->UpdateSubresource(g_pCBChangeOnResize, 0, nullptr, &cbChangesOnResize, 0, 0);
 
     CD3D11_TEXTURE2D_DESC ltd(
         DXGI_FORMAT_R32G32B32A32_FLOAT,
@@ -659,28 +626,30 @@ HRESULT InitDevice()
 }
 
 
+
+
 //--------------------------------------------------------------------------------------
 // Clean up the objects we've created
 //--------------------------------------------------------------------------------------
 void CleanupDevice()
 {
-    if (g_pImmediateContext) g_pImmediateContext->ClearState();
+    if (deviceContext) deviceContext->ClearState();
 
     if (g_pSamplerLinear) g_pSamplerLinear->Release();
     if (g_pTextureRV) g_pTextureRV->Release();
     if (g_pCBChangesOnCameraAction) g_pCBChangesOnCameraAction->Release();
     if (g_pCBChangeOnResize) g_pCBChangeOnResize->Release();
     if (g_pCBChangesEveryFrame) g_pCBChangesEveryFrame->Release();
-    if (g_pVertexBuffer) g_pVertexBuffer->Release();
+    if (vertexBuffer) vertexBuffer->Release();
     if (g_pIndexBuffer) g_pIndexBuffer->Release();
-    if (g_pVertexLayout) g_pVertexLayout->Release();
+    if (inputVertexLayout) inputVertexLayout->Release();
     if (g_pVertexShader) g_pVertexShader->Release();
     if (g_pPixelShader) g_pPixelShader->Release();
     if (g_pDepthStencil) g_pDepthStencil->Release();
-    if (g_pDepthStencilView) g_pDepthStencilView->Release();
-    if (g_pRenderTargetView) g_pRenderTargetView->Release();
+    if (depthStencilView) depthStencilView->Release();
+    if (renderTargetView) renderTargetView->Release();
     if (g_pSwapChain) g_pSwapChain->Release();
-    if (g_pImmediateContext) g_pImmediateContext->Release();
+    if (deviceContext) deviceContext->Release();
     if (g_pd3dDevice) g_pd3dDevice->Release();
     if (g_lightColorBuffer) g_lightColorBuffer->Release();
     if (m_pBrightnessBuffer) m_pBrightnessBuffer->Release();
@@ -709,7 +678,7 @@ void ChangeViewOnAction(XMVECTOR move) {
     CBChangesOnCameraAction cbChangesOnCameraAction;
     cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
     cbChangesOnCameraAction.Eye = tempEye;
-    g_pImmediateContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
+    deviceContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
 }
 
 void ChangeCameraZoom(float mult) {
@@ -722,7 +691,7 @@ void ChangeCameraZoom(float mult) {
 
     CBChangeOnResize cbChangesOnResize;
     cbChangesOnResize.mProjection = XMMatrixTranspose(g_Projection);
-    g_pImmediateContext->UpdateSubresource(g_pCBChangeOnResize, 0, nullptr, &cbChangesOnResize, 0, 0);
+    deviceContext->UpdateSubresource(g_pCBChangeOnResize, 0, nullptr, &cbChangesOnResize, 0, 0);
 }
 
 //--------------------------------------------------------------------------------------
@@ -752,10 +721,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (g_pSwapChain)
         {
             ChangeCameraZoom(1.0);
-            g_pImmediateContext->OMSetRenderTargets(0, 0, 0);
+            deviceContext->OMSetRenderTargets(0, 0, 0);
 
             // Release all outstanding references to the swap chain's buffers.
-            g_pRenderTargetView->Release();
+            renderTargetView->Release();
 
             HRESULT hr;
             // Preserve the existing buffer count and format.
@@ -842,12 +811,12 @@ HRESULT SetView(UINT width, UINT height)
     if (FAILED(hr))
         return hr;
     hr = g_pd3dDevice->CreateRenderTargetView(pBuffer, NULL,
-        &g_pRenderTargetView);
+        &renderTargetView);
     if (FAILED(hr))
         return hr;
     pBuffer->Release();
 
-    g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, NULL);
+    deviceContext->OMSetRenderTargets(1, &renderTargetView, NULL);
 
     // Set up the viewport.
     vp.Width = (FLOAT)width;
@@ -856,7 +825,7 @@ HRESULT SetView(UINT width, UINT height)
     vp.MaxDepth = 1.0f;
     vp.TopLeftX = 0;
     vp.TopLeftY = 0;
-    g_pImmediateContext->RSSetViewports(1, &vp);
+    deviceContext->RSSetViewports(1, &vp);
 
     return S_OK;
 }
@@ -895,7 +864,7 @@ HRESULT CreateLights()
     hr = g_pd3dDevice->CreateBuffer(&lpbd, nullptr, &g_lightColorBuffer);
     if (FAILED(hr))
         return hr;
-    g_pImmediateContext->UpdateSubresource(g_lightColorBuffer, 0, nullptr, &lcb1, 0, 0);
+    deviceContext->UpdateSubresource(g_lightColorBuffer, 0, nullptr, &lcb1, 0, 0);
     return hr;
 }
 
@@ -925,25 +894,25 @@ void PostRender()
         return;
     float backgroundColour[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
     for (size_t i = 0; i < g_pAvLumProc->renderTextures.size(); i++)
-        g_pImmediateContext->ClearRenderTargetView(g_pAvLumProc->renderTextures[i].GetRenderTargetView(), backgroundColour);
+        deviceContext->ClearRenderTargetView(g_pAvLumProc->renderTextures[i].GetRenderTargetView(), backgroundColour);
 
-    g_pImmediateContext->IASetInputLayout(nullptr);
-    g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    deviceContext->IASetInputLayout(nullptr);
+    deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 
-    g_pImmediateContext->VSSetShader(g_pVertexPostShader, nullptr, 0);
+    deviceContext->VSSetShader(g_pVertexPostShader, nullptr, 0);
 
-    g_pImmediateContext->PSSetSamplers(0, 1, &(g_pAvLumProc->pSamplerState));
+    deviceContext->PSSetSamplers(0, 1, &(g_pAvLumProc->pSamplerState));
 
-    CopyTexture(g_pImmediateContext, sourceTexture, g_pAvLumProc->renderTextures[0], g_pCopyPixelPostShader);
-    CopyTexture(g_pImmediateContext, g_pAvLumProc->renderTextures[0].GetShaderResourceView(), g_pAvLumProc->renderTextures[1], g_pBrightnessPixelPostShader);
+    CopyTexture(deviceContext, sourceTexture, g_pAvLumProc->renderTextures[0], g_pCopyPixelPostShader);
+    CopyTexture(deviceContext, g_pAvLumProc->renderTextures[0].GetShaderResourceView(), g_pAvLumProc->renderTextures[1], g_pBrightnessPixelPostShader);
 
     for (size_t i = 2; i < g_pAvLumProc->renderTextures.size(); i++)
     {
-        CopyTexture(g_pImmediateContext, g_pAvLumProc->renderTextures[i - 1].GetShaderResourceView(), g_pAvLumProc->renderTextures[i], g_pCopyPixelPostShader);
+        CopyTexture(deviceContext, g_pAvLumProc->renderTextures[i - 1].GetShaderResourceView(), g_pAvLumProc->renderTextures[i], g_pCopyPixelPostShader);
     }
 
     ID3D11ShaderResourceView* nullsrv[] = { nullptr };
-    g_pImmediateContext->PSSetShaderResources(0, 1, nullsrv);
+    deviceContext->PSSetShaderResources(0, 1, nullsrv);
 
     LARGE_INTEGER currentTime;
     QueryPerformanceCounter(&currentTime);
@@ -952,33 +921,33 @@ void PostRender()
     double delta = static_cast<double>(timeDelta) / g_pAvLumProc->frequency.QuadPart;
 
     D3D11_MAPPED_SUBRESOURCE BrightnessAccessor;
-    g_pImmediateContext->CopyResource(g_pBrightnessTexture, g_pAvLumProc->renderTextures[g_pAvLumProc->renderTextures.size() - 1].GetRenderTarget());
-    g_pImmediateContext->Map(g_pBrightnessTexture, 0, D3D11_MAP_READ, 0, &BrightnessAccessor);
+    deviceContext->CopyResource(g_pBrightnessTexture, g_pAvLumProc->renderTextures[g_pAvLumProc->renderTextures.size() - 1].GetRenderTarget());
+    deviceContext->Map(g_pBrightnessTexture, 0, D3D11_MAP_READ, 0, &BrightnessAccessor);
     float Brightness = *(float*)BrightnessAccessor.pData;
-    g_pImmediateContext->Unmap(g_pBrightnessTexture, 0);
+    deviceContext->Unmap(g_pBrightnessTexture, 0);
 
     float sigma = 0.04f / (0.04f + Brightness);
     float tau = sigma * 0.4f + (1 - sigma) * 0.1f;
 
     g_adaptedBrightness += (Brightness - g_adaptedBrightness) * static_cast<float>(1 - exp(-delta * tau));
     BrightnessConstantBuffer BrightnessBufferData = { g_adaptedBrightness };
-    g_pImmediateContext->UpdateSubresource(m_pBrightnessBuffer, 0, nullptr, &BrightnessBufferData, 0, 0);
+    deviceContext->UpdateSubresource(m_pBrightnessBuffer, 0, nullptr, &BrightnessBufferData, 0, 0);
 
-    g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, nullptr);
-    g_pImmediateContext->RSSetViewports(1, &vp);
+    deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
+    deviceContext->RSSetViewports(1, &vp);
 
-    g_pImmediateContext->IASetInputLayout(nullptr);
-    g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    deviceContext->IASetInputLayout(nullptr);
+    deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 
-    g_pImmediateContext->VSSetShader(g_pVertexPostShader, nullptr, 0);
-    g_pImmediateContext->PSSetShader(g_pTonemapPixelPostShader, nullptr, 0);
-    g_pImmediateContext->PSSetConstantBuffers(0, 1, &m_pBrightnessBuffer);
-    g_pImmediateContext->PSSetShaderResources(0, 1, &sourceTexture);
-    g_pImmediateContext->PSSetSamplers(0, 1, &(g_pToneMapProc->pSamplerState));
+    deviceContext->VSSetShader(g_pVertexPostShader, nullptr, 0);
+    deviceContext->PSSetShader(g_pTonemapPixelPostShader, nullptr, 0);
+    deviceContext->PSSetConstantBuffers(0, 1, &m_pBrightnessBuffer);
+    deviceContext->PSSetShaderResources(0, 1, &sourceTexture);
+    deviceContext->PSSetSamplers(0, 1, &(g_pToneMapProc->pSamplerState));
 
-    g_pImmediateContext->Draw(4, 0);
+    deviceContext->Draw(4, 0);
 
-    g_pImmediateContext->PSSetShaderResources(0, 1, nullsrv);
+    deviceContext->PSSetShaderResources(0, 1, nullsrv);
 
 
 }
@@ -989,24 +958,24 @@ void Render()
 {
     // Clear the back buffer
     //
-    g_pImmediateContext->ClearRenderTargetView(g_pRenderTargetView, Colors::MidnightBlue);
-    g_pImmediateContext->ClearRenderTargetView(g_pRenderTexture->GetRenderTargetView(), Colors::MidnightBlue);
+    deviceContext->ClearRenderTargetView(renderTargetView, Colors::MidnightBlue);
+    deviceContext->ClearRenderTargetView(g_pRenderTexture->GetRenderTargetView(), Colors::MidnightBlue);
     //
     // Clear the depth buffer to 1.0 (max depth)
     //
-    g_pImmediateContext->ClearDepthStencilView(g_pDepthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
+    deviceContext->ClearDepthStencilView(depthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
     ID3D11RenderTargetView* renderTarget = g_pRenderTexture->GetRenderTargetView();
     D3D11_VIEWPORT viewport = g_pRenderTexture->GetViewPort();
 
-    g_pImmediateContext->OMSetRenderTargets(1, &renderTarget, g_pDepthStencilView);
-    g_pImmediateContext->RSSetViewports(1, &viewport);
+    deviceContext->OMSetRenderTargets(1, &renderTarget, depthStencilView);
+    deviceContext->RSSetViewports(1, &viewport);
     UINT stride = sizeof(SimpleVertex);
     UINT offset = 0;
-    g_pImmediateContext->IASetVertexBuffers(0, 1, &g_pVertexBuffer, &stride, &offset);
-    g_pImmediateContext->IASetIndexBuffer(g_pIndexBuffer, DXGI_FORMAT_R16_UINT, 0);
+    deviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
+    deviceContext->IASetIndexBuffer(g_pIndexBuffer, DXGI_FORMAT_R16_UINT, 0);
 
     // Set primitive topology
-    g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     // Update variables that change once per frame
     //
@@ -1016,26 +985,26 @@ void Render()
     g_View = camera.GetViewMatrix();
     CBChangesOnCameraAction cbChangesOnCameraAction;
     cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
-    g_pImmediateContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
-    g_pImmediateContext->UpdateSubresource(g_pCBChangesEveryFrame, 0, nullptr, &cb, 0, 0);
+    deviceContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
+    deviceContext->UpdateSubresource(g_pCBChangesEveryFrame, 0, nullptr, &cb, 0, 0);
     // Set the input layout
-    g_pImmediateContext->IASetInputLayout(g_pVertexLayout);
+    deviceContext->IASetInputLayout(inputVertexLayout);
     //
     // Render
     //
-    g_pImmediateContext->VSSetShader(g_pVertexShader, nullptr, 0);
-    g_pImmediateContext->VSSetConstantBuffers(0, 1, &g_pCBChangesOnCameraAction);
-    g_pImmediateContext->VSSetConstantBuffers(1, 1, &g_pCBChangeOnResize);
-    g_pImmediateContext->VSSetConstantBuffers(2, 1, &g_pCBChangesEveryFrame);
-    g_pImmediateContext->VSSetConstantBuffers(3, 1, &g_lightColorBuffer);
+    deviceContext->VSSetShader(g_pVertexShader, nullptr, 0);
+    deviceContext->VSSetConstantBuffers(0, 1, &g_pCBChangesOnCameraAction);
+    deviceContext->VSSetConstantBuffers(1, 1, &g_pCBChangeOnResize);
+    deviceContext->VSSetConstantBuffers(2, 1, &g_pCBChangesEveryFrame);
+    deviceContext->VSSetConstantBuffers(3, 1, &g_lightColorBuffer);
 
-    g_pImmediateContext->PSSetShader(g_pPixelShader, nullptr, 0);
-    g_pImmediateContext->PSSetConstantBuffers(2, 1, &g_pCBChangesEveryFrame);
-    g_pImmediateContext->PSSetConstantBuffers(3, 1, &g_lightColorBuffer);
-    g_pImmediateContext->PSSetShaderResources(0, 1, &g_pTextureRV);
+    deviceContext->PSSetShader(g_pPixelShader, nullptr, 0);
+    deviceContext->PSSetConstantBuffers(2, 1, &g_pCBChangesEveryFrame);
+    deviceContext->PSSetConstantBuffers(3, 1, &g_lightColorBuffer);
+    deviceContext->PSSetShaderResources(0, 1, &g_pTextureRV);
 
-    g_pImmediateContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
-    g_pImmediateContext->DrawIndexed(m_indexCount, 0, 0);
+    deviceContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
+    deviceContext->DrawIndexed(m_indexCount, 0, 0);
 
     PostRender();
 
