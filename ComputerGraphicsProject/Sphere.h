@@ -5,12 +5,8 @@
 
 class Sphere {
 public:
-    Sphere();
+    Sphere(float radius, int numTheta, int numPhi, bool outerNorm);
     std::vector<SimpleVertex> vertices;
-    std::vector<WORD> indices;
+    std::vector<int> indices;
 
-private:
-    const int numLines = 16;
-    const float spacing = 1.0f / numLines;
-    const float sphereRadius = 1.0f;
 };

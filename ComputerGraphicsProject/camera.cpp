@@ -4,9 +4,9 @@ using namespace DirectX;
 
 Camera::Camera()
 {
-    Pos = XMVectorSet(0.0f, 4.0f, 1.0f, 0.0f);
-    Dir = XMVectorSet(-1.0f, -9.0f, -5.0f, 0.0f);
-    Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    Pos = XMVectorSet(0.0f, 2.0f, -4.0f, 0.0f);
+    Dir = XMVector3Normalize(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f));
+    Up = { 0.0f, 1.0f, 0.0f };
 }
 
 XMMATRIX Camera::GetViewMatrix()
