@@ -121,7 +121,7 @@ float4 psLambert(VsOutput input) : SV_TARGET{
     float3 color = colorBase.rgb + ambientLight.rgb;
     for (int i = 0; i < NUM_LIGHTS; i++)
     {
-        color += projectedRadiance(i, input.worldPos.xyz, input.worldNorm);
+        color += projectedRadiance(i, input.worldPos.xyz, normalize(input.worldNorm));
     }
     return float4(color, colorBase.a);
 }
@@ -134,7 +134,7 @@ float4 psNDF(VsOutput input) : SV_TARGET{
     {
         const float3 lightDir = normalize(lightPos[i].xyz - pos);
         const float3 halfway = normalize(cameraDir + lightDir);
-        colorGrayscale += ndf(input.worldNorm, halfway);
+        colorGrayscale += ndf(normalize(input.worldNorm), halfway);
     }
     return colorGrayscale;
 }
@@ -146,7 +146,7 @@ float4 psGeometry(VsOutput input) : SV_TARGET{
     for (int i = 0; i < NUM_LIGHTS; i++)
     {
         const float3 lightDir = normalize(lightPos[i].xyz - pos);
-        colorGrayscale += geometryFunction2dir(input.worldNorm, lightDir, cameraDir);
+        colorGrayscale += geometryFunction2dir(normalize(input.worldNorm), lightDir, cameraDir);
     }
     return colorGrayscale;
 }
@@ -159,7 +159,7 @@ float4 psFresnel(VsOutput input) : SV_TARGET{
     {
         const float3 lightDir = normalize(lightPos[i].xyz - pos);
         const float3 halfway = normalize(cameraDir + lightDir);
-        color += fresnelFunction(cameraDir, halfway) * (dot(lightDir, input.worldNorm) > 0.0f);
+        color += fresnelFunction(cameraDir, halfway) * (dot(lightDir, normalize(input.worldNorm)) > 0.0f);
     }
     return float4(color, colorBase.a);
 }
@@ -172,8 +172,8 @@ float4 psPBR(VsOutput input) : SV_TARGET{
     {
         const float3 lightDir = normalize(lightPos[i].xyz - pos);
         const float3 halfway = normalize(cameraDir + lightDir);
-        const float3 radiance = projectedRadiance(i, pos, input.worldNorm);
-        color += radiance * brdf(input.worldNorm, lightDir, cameraDir);
+        const float3 radiance = projectedRadiance(i, pos, normalize(input.worldNorm));
+        color += radiance * brdf(normalize(input.worldNorm), lightDir, cameraDir);
     }
     return float4(color, colorBase.a);
 }
