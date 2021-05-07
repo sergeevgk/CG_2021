@@ -1,7 +1,9 @@
 #pragma once
 #include <windows.h>
+#include <DirectXMath.h>
 #include <DirectXColors.h>
 #include <minwindef.h>
+#include "WorldBorders.h"
 using namespace DirectX;
 
 class Camera
@@ -9,9 +11,11 @@ class Camera
 public:
     Camera();
 
+    XMVECTOR Pos, Dir, Up;
+
     XMMATRIX GetViewMatrix();
 
-    void Move(float dx = 0.0f, float dy = 0.0f, float dz = 0.0f);
+    void Move(const XMVECTOR& dv);
 
     void MoveNormal(float dn);
 
@@ -21,10 +25,10 @@ public:
 
     void RotateVertical(float angle);
 
+    void PositionClip(const WorldBorders& b);
 
 private:
     XMVECTOR getTangentVector();
 
-    XMVECTOR pos, dir, up;
     float verticalAngle = 0.0f;
 };

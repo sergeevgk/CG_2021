@@ -11,9 +11,16 @@
 #include "RenderTexture.h"
 #include <vector>
 #include <cmath>
-#include "AverageBrightnessProcess.h"
-#include "ToneMapProcess.h"
-#define NUM_LIGHTS 3
+#include "RenderMode.h"
+#include "SimpleVertex.h"
+#include "Sphere.h"
+#include "PointLight.h"
+#include "ImGui/imgui.h"
+#include "ImGui/imgui_impl_dx11.h"
+#include "ImGui/imgui_impl_win32.h"
+
+#define NUM_LIGHTS 1
+#define NUM_RENDER_MODES 4
 
 using namespace DirectX;
 using namespace std;
@@ -21,41 +28,31 @@ using namespace std;
 //--------------------------------------------------------------------------------------
 // Structures
 //--------------------------------------------------------------------------------------
-struct SimpleVertex
-{
-    XMFLOAT3 Pos;
-    XMFLOAT2 Tex;
-    XMFLOAT3 Normal;
-    XMFLOAT3 Tangent;
-};
 
-struct CBChangesOnCameraAction
-{
-    XMMATRIX mView;
-    XMFLOAT4 Eye;
-};
-
-struct CBChangeOnResize
-{
-    XMMATRIX mProjection;
-};
-
-struct CBChangesEveryFrame
-{
-    XMMATRIX mWorld;
-};
-
-struct LightConstantBuffer {
-    XMFLOAT4 vLightPos[3];
-    XMFLOAT4 vLightColor[3];
-    XMFLOAT4 vOutputColor;
+struct GeometryOperatorsConstantBuffer {
+    XMMATRIX world;
+    XMMATRIX worldNormals;
+    XMMATRIX view;
+    XMMATRIX projection;
+    XMFLOAT4 cameraPos;
 };
 
 __declspec(align(16))
-struct BrightnessConstantBuffer
-{
-    float AverageBrightness;
+struct SpherePropsConstantBuffer {
+    XMFLOAT4 color;
+    float roughness;
+    float metalness;
 };
+
+__declspec(align(16))
+struct LightsConstantBuffer {
+    XMFLOAT4 ambientLight;
+    XMFLOAT4 lightPos[NUM_LIGHTS];
+    XMFLOAT4 lightColor[NUM_LIGHTS];
+    XMFLOAT4 lightAttenuation[NUM_LIGHTS];
+    float lightIntensity[3 * NUM_LIGHTS];
+};
+
 
 //--------------------------------------------------------------------------------------
 // Global Variables
@@ -65,34 +62,37 @@ HWND                                g_hWnd = nullptr;
 D3D_DRIVER_TYPE                     g_driverType = D3D_DRIVER_TYPE_NULL;
 D3D_FEATURE_LEVEL                   g_featureLevel = D3D_FEATURE_LEVEL_11_0;
 ID3D11Device* g_pd3dDevice = nullptr;
-ID3D11DeviceContext* g_pImmediateContext = nullptr;
+ID3D11DeviceContext* g_deviceContext = nullptr;
 IDXGISwapChain* g_pSwapChain = nullptr;
-ID3D11RenderTargetView* g_pRenderTargetView = nullptr;
+ID3D11RenderTargetView* renderTargetView = nullptr;
 ID3D11Texture2D* g_pDepthStencil = nullptr;
 ID3D11DepthStencilView* g_pDepthStencilView = nullptr;
+ID3D11InputLayout* g_pInputVertexLayout = nullptr;
 RenderTexture* g_pRenderTexture = nullptr;
-ID3D11InputLayout* g_pVertexLayout = nullptr;
+std::vector<RenderTexture*> g_pLuminanceLogTextures;
 
-ID3D11Buffer* g_pVertexBuffer = nullptr;
-ID3D11Buffer* g_pIndexBuffer = nullptr;
-ID3D11Buffer* g_pCBChangesOnCameraAction = nullptr;
-ID3D11Buffer* g_pCBChangeOnResize = nullptr;
-ID3D11Buffer* g_pCBChangesEveryFrame = nullptr;
-ID3D11Buffer* g_lightColorBuffer = nullptr;
-ID3D11Buffer* m_pBrightnessBuffer;
+ID3D11Buffer* g_sphereVertexBuffer = nullptr;
+ID3D11Buffer* g_sphereIndexBuffer = nullptr;
+ID3D11Buffer* g_environmentIndexBuffer = nullptr;
+ID3D11Buffer* g_environmentVertexBuffer = nullptr;
+ID3D11Buffer* g_lightConstantBuffer = nullptr;
+ID3D11Buffer* g_geometryConstantBuffer = nullptr;
+ID3D11Buffer* g_spropsConstantBuffer = nullptr;
+
 
 ID3D11ShaderResourceView* g_pTextureRV = nullptr;
 ID3D11SamplerState* g_pSamplerLinear = nullptr;
 
-XMMATRIX                            g_World;
-XMMATRIX                            g_View;
-XMMATRIX                            g_Projection;
-XMFLOAT4                            g_vMeshColor(0.7f, 0.7f, 0.7f, 1.0f);
-XMVECTOR                            g_Eye;
-XMVECTOR                            g_At;
-XMVECTOR                            g_Up;
-float                               g_Zoom = XM_PIDIV4 * 2.5;
-Camera                              camera;
+XMMATRIX  g_sphereWorld;
+XMMATRIX  g_World;
+XMMATRIX  g_View;
+XMMATRIX  g_Projection;
+XMVECTOR  g_Eye;
+XMVECTOR  g_At;
+XMVECTOR  g_Up;
+Camera    camera;
+WorldBorders  g_Borders;
+
 
 ID3D11VertexShader* g_pVertexShader = nullptr;
 ID3D11PixelShader* g_pPixelShader = nullptr;
@@ -101,40 +101,63 @@ ID3D11PixelShader* g_pCopyPixelPostShader = nullptr;
 ID3D11PixelShader* g_pBrightnessPixelPostShader = nullptr;
 ID3D11PixelShader* g_pTonemapPixelPostShader = nullptr;
 
-float g_adaptedBrightness;
 
-ID3D11Texture2D* g_pBrightnessTexture;
+ID3D11PixelShader* g_pPBRPixelShader = nullptr;
+ID3D11PixelShader* g_pNormalDistPixelShader = nullptr;
+ID3D11PixelShader* g_pGeometryPixelShader = nullptr;
+ID3D11PixelShader* g_pFresnelPixelShader = nullptr;
+
+
+ID3D11VertexShader* g_pVertexShaderCopy = nullptr;
+ID3D11PixelShader* g_pPixelShaderToneMapping = nullptr;
+
+ID3D11VertexShader* g_pEnvironmentVertexShader = nullptr;
+ID3D11PixelShader* g_pEnvironmentPixelShader = nullptr;
+
+
 D3D11_VIEWPORT vp;
 
-AverageBrightnessProcess* g_pAvLumProc = nullptr;
-ToneMapProcess* g_pToneMapProc = nullptr;
 
-//--------------------------------------------------------------------------------------
-// Forward declarations
-//--------------------------------------------------------------------------------------
-HRESULT InitWindow(HINSTANCE hInstance, int nCmdShow);
-HRESULT InitDevice();
-HRESULT CreateLights();
+const char* renderModes[NUM_RENDER_MODES] = { "PBR", "NDF", "Geometry", "Fresnel" };
+RenderMode renderMode = RenderMode::PBR;
+
+ID3D11DepthStencilState* g_pDepthStencilState = nullptr;
+
+
+UINT vertexStride;
+UINT vertexOffset;
+UINT numIndices;
+UINT numIndicesEnv;
+
+float sphereColorRGB[4] = { 0.2f, 0.0f, 0.0f, 1.0f };;
+XMFLOAT4 sphereColorSRGB;
+XMFLOAT4 ambientLight;
+float roughness = 0.5f;
+float metalness = 0.5f;
+float intensity = 10.0f;
+
+PointLight lights[NUM_LIGHTS];
+
+ID3DBlob* g_pBlob = nullptr;
+
+HRESULT InitWindow(HINSTANCE hInstance, WNDPROC window_proc, int nCmdShow);
+HRESULT Init();
+HRESULT InitScene();
 HRESULT CreatePS(WCHAR* fileName, string shaderName, ID3D11PixelShader** pixelShader);
-HRESULT CreateVS(WCHAR* fileName, string shaderName, ID3D11VertexShader** vertexShader, ID3DBlob** pVSBlob);
-HRESULT SetView(UINT width, UINT height);
+HRESULT CreateVS(WCHAR* fileName, string shaderName, ID3D11VertexShader** vertexShader);
 void CleanupDevice();
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 void Render();
 
-//--------------------------------------------------------------------------------------
-// Entry point to the program. Initializes everything and goes into a message processing 
-// loop. Idle time is used to render the scene.
-//--------------------------------------------------------------------------------------
 int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
 
-    if (FAILED(InitWindow(hInstance, nCmdShow)))
+    if (FAILED(InitWindow(hInstance, WndProc, nCmdShow)))
         return 0;
 
-    if (FAILED(InitDevice()))
+    if (FAILED(Init()))
     {
         CleanupDevice();
         return 0;
@@ -160,10 +183,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
     return (int)msg.wParam;
 }
 
-//--------------------------------------------------------------------------------------
-// Register class and create window
-//--------------------------------------------------------------------------------------
-HRESULT InitWindow(HINSTANCE hInstance, int nCmdShow)
+HRESULT InitWindow(HINSTANCE hInstance, WNDPROC window_proc, int nCmdShow)
 {
     // Register class
     WNDCLASSEX wcex;
@@ -194,15 +214,9 @@ HRESULT InitWindow(HINSTANCE hInstance, int nCmdShow)
         return E_FAIL;
 
     ShowWindow(g_hWnd, nCmdShow);
-
     return S_OK;
 }
 
-//--------------------------------------------------------------------------------------
-// Helper for compiling shaders with D3DCompile
-//
-// With VS 11, we could load up prebuilt .cso files instead...
-//--------------------------------------------------------------------------------------
 HRESULT CompileShaderFromFile(WCHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szShaderModel, ID3DBlob** ppBlobOut)
 {
     HRESULT hr = S_OK;
@@ -236,70 +250,12 @@ HRESULT CompileShaderFromFile(WCHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szS
     return S_OK;
 }
 
-HRESULT CreateProcessShaders() {
-    // Compile the vertex shader
-    HRESULT hr;
-    ID3DBlob* pVSBlob = nullptr;
-    hr = CreateVS(L"PS_VS.fx", "VS", &g_pVertexShader, &pVSBlob);
-    if (FAILED(hr)) {
-        return hr;
-    }
-
-    // Define the input layout
-    D3D11_INPUT_ELEMENT_DESC layout[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0},
-        { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0},
-    };
-    UINT numElements = ARRAYSIZE(layout);
-
-    // Create the input layout
-    hr = g_pd3dDevice->CreateInputLayout(layout, numElements, pVSBlob->GetBufferPointer(),
-        pVSBlob->GetBufferSize(), &g_pVertexLayout);
-    pVSBlob->Release();
-    if (FAILED(hr))
-        return hr;
-
-    // Set the input layout
-    g_pImmediateContext->IASetInputLayout(g_pVertexLayout);
-
-    hr = CreatePS(L"PS_VS.fx", "PS", &g_pPixelShader);
-    if (FAILED(hr)) {
-        return hr;
-    }
-    return hr;
-}
-
-HRESULT CreatePostProcessShaders() {
-
-    HRESULT hr;
-    ID3DBlob* pVSBlob = nullptr;
-    hr = CreateVS(L"TonemapShader.fx", "VS_COPY", &g_pVertexPostShader, &pVSBlob);
-    if (FAILED(hr)) {
-        return hr;
-    }
-    hr = CreatePS(L"TonemapShader.fx", "PS_COPY", &g_pCopyPixelPostShader);
-    if (FAILED(hr)) {
-        return hr;
-    }
-    hr = CreatePS(L"TonemapShader.fx", "PS_BRIGHTNESS", &g_pBrightnessPixelPostShader);
-    if (FAILED(hr)) {
-        return hr;
-    }
-    hr = CreatePS(L"TonemapShader.fx", "PS_TONEMAP", &g_pTonemapPixelPostShader);
-    if (FAILED(hr)) {
-        return hr;
-    }
-    return hr;
-}
 
 HRESULT CreatePS(WCHAR* fileName, string shaderName, ID3D11PixelShader** pixelShader) {
     // Compile the pixel shader
     ID3DBlob* pPSBlob = nullptr;
     HRESULT hr;
-    hr = CompileShaderFromFile(fileName, shaderName.c_str(), "ps_4_0", &pPSBlob);
+    hr = CompileShaderFromFile(fileName, shaderName.c_str(), "ps_5_0", &pPSBlob);
     if (FAILED(hr))
     {
         MessageBox(nullptr,
@@ -315,11 +271,12 @@ HRESULT CreatePS(WCHAR* fileName, string shaderName, ID3D11PixelShader** pixelSh
     return hr;
 }
 
-HRESULT CreateVS(WCHAR* fileName, string shaderName, ID3D11VertexShader** vertexShader, ID3DBlob** pVSBlob) {
+HRESULT CreateVS(WCHAR* fileName, string shaderName, ID3D11VertexShader** vertexShader) {
 
     // Compile the pixel shader
+    ID3DBlob* pVSBlob = nullptr;
     HRESULT hr;
-    hr = CompileShaderFromFile(fileName, shaderName.c_str(), "vs_4_0", pVSBlob);
+    hr = CompileShaderFromFile(fileName, shaderName.c_str(), "vs_5_0", &pVSBlob);
     if (FAILED(hr))
     {
         MessageBox(nullptr,
@@ -328,21 +285,68 @@ HRESULT CreateVS(WCHAR* fileName, string shaderName, ID3D11VertexShader** vertex
     }
 
     // Create the pixel shader
-    hr = g_pd3dDevice->CreateVertexShader((*pVSBlob)->GetBufferPointer(), (*pVSBlob)->GetBufferSize(), nullptr, vertexShader);
+    hr = g_pd3dDevice->CreateVertexShader(pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), nullptr, vertexShader);
     if (FAILED(hr)) {
-        (*pVSBlob)->Release();
+        pVSBlob->Release();
         return hr;
     }
     return hr;
 }
 
-//--------------------------------------------------------------------------------------
-// Create Direct3D device and swap chain
-//--------------------------------------------------------------------------------------
-HRESULT InitDevice()
-{
-    HRESULT hr = S_OK;
+HRESULT InitShaders() {
+    HRESULT hr;
+    CompileShaderFromFile(L"Shaders.fx", "vsMain", "vs_5_0", &g_pBlob);
 
+    WCHAR* shaderFileName = L"Shaders.fx";
+
+    hr = CreateVS(shaderFileName, "vsEnvironment", &g_pEnvironmentVertexShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    hr = CreatePS(shaderFileName, "psEnvironment", &g_pEnvironmentPixelShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    hr = CreateVS(shaderFileName, "vsMain", &g_pVertexShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    hr = CreatePS(shaderFileName, "psPBR", &g_pPBRPixelShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    hr = CreatePS(shaderFileName, "psNDF", &g_pNormalDistPixelShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    hr = CreatePS(shaderFileName, "psGeometry", &g_pGeometryPixelShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    hr = CreatePS(shaderFileName, "psFresnel", &g_pFresnelPixelShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    hr = CreateVS(shaderFileName, "vsCopyMain", &g_pVertexShaderCopy);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    hr = CreatePS(shaderFileName, "psToneMappingMain", &g_pPixelShaderToneMapping);
+    if (FAILED(hr)) {
+        return hr;
+    }
+}
+
+HRESULT Init() {
+    HRESULT hr;
     RECT rc;
     GetClientRect(g_hWnd, &rc);
     UINT width = rc.right - rc.left;
@@ -374,13 +378,13 @@ HRESULT InitDevice()
     {
         g_driverType = driverTypes[driverTypeIndex];
         hr = D3D11CreateDevice(nullptr, g_driverType, nullptr, createDeviceFlags, featureLevels, numFeatureLevels,
-            D3D11_SDK_VERSION, &g_pd3dDevice, &g_featureLevel, &g_pImmediateContext);
+            D3D11_SDK_VERSION, &g_pd3dDevice, &g_featureLevel, &g_deviceContext);
 
         if (hr == E_INVALIDARG)
         {
             // DirectX 11.0 platforms will not recognize D3D_FEATURE_LEVEL_11_1 so we need to retry without it
             hr = D3D11CreateDevice(nullptr, g_driverType, nullptr, createDeviceFlags, &featureLevels[1], numFeatureLevels - 1,
-                D3D11_SDK_VERSION, &g_pd3dDevice, &g_featureLevel, &g_pImmediateContext);
+                D3D11_SDK_VERSION, &g_pd3dDevice, &g_featureLevel, &g_deviceContext);
         }
 
         if (SUCCEEDED(hr))
@@ -389,28 +393,23 @@ HRESULT InitDevice()
     if (FAILED(hr))
         return hr;
 
-    // Obtain DXGI factory from device (since we used nullptr for pAdapter above)
     IDXGIFactory1* dxgiFactory = nullptr;
+    IDXGIDevice* dxgiDevice = nullptr;
+    hr = g_pd3dDevice->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDevice));
+    if (SUCCEEDED(hr))
     {
-        IDXGIDevice* dxgiDevice = nullptr;
-        hr = g_pd3dDevice->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDevice));
+        IDXGIAdapter* dxgiAdapter = nullptr;
+        hr = dxgiDevice->GetAdapter(&dxgiAdapter);
         if (SUCCEEDED(hr))
         {
-            IDXGIAdapter* adapter = nullptr;
-            hr = dxgiDevice->GetAdapter(&adapter);
-            if (SUCCEEDED(hr))
-            {
-                hr = adapter->GetParent(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&dxgiFactory));
-                adapter->Release();
-            }
-            dxgiDevice->Release();
+            hr = dxgiAdapter->GetParent(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&dxgiFactory));
+            dxgiAdapter->Release();
         }
+        dxgiDevice->Release();
     }
     if (FAILED(hr))
         return hr;
 
-    // Create swap chain
-    // DirectX 11.0 systems
     DXGI_SWAP_CHAIN_DESC sd;
     ZeroMemory(&sd, sizeof(sd));
     sd.BufferCount = 1;
@@ -435,278 +434,261 @@ HRESULT InitDevice()
     if (FAILED(hr))
         return hr;
 
-    // Create a render target view
-    ID3D11Texture2D* pBackBuffer = nullptr;
-    hr = g_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&pBackBuffer));
-    if (FAILED(hr))
+    ID3D11Texture2D* p_framebuffer;
+    hr = g_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)(&p_framebuffer));
+    if (FAILED(hr)) {
         return hr;
+    }
 
-    hr = g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_pRenderTargetView);
-    pBackBuffer->Release();
-    if (FAILED(hr))
+    hr = g_pd3dDevice->CreateRenderTargetView(p_framebuffer, 0, &renderTargetView);
+    if (FAILED(hr)) {
         return hr;
+    }
+    p_framebuffer->Release();
 
-    // Create depth stencil texture
-    D3D11_TEXTURE2D_DESC descDepth;
-    ZeroMemory(&descDepth, sizeof(descDepth));
-    descDepth.Width = width;
-    descDepth.Height = height;
-    descDepth.MipLevels = 1;
-    descDepth.ArraySize = 1;
-    descDepth.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    descDepth.SampleDesc.Count = 1;
-    descDepth.SampleDesc.Quality = 0;
-    descDepth.Usage = D3D11_USAGE_DEFAULT;
-    descDepth.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-    descDepth.CPUAccessFlags = 0;
-    descDepth.MiscFlags = 0;
-    hr = g_pd3dDevice->CreateTexture2D(&descDepth, nullptr, &g_pDepthStencil);
-    if (FAILED(hr))
-        return hr;
+    D3D11_DEPTH_STENCIL_DESC depthStencilDesc = CD3D11_DEPTH_STENCIL_DESC(CD3D11_DEFAULT());
+    depthStencilDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+    g_pd3dDevice->CreateDepthStencilState(&depthStencilDesc, &g_pDepthStencilState);
 
-    // Create the depth stencil view
-    D3D11_DEPTH_STENCIL_VIEW_DESC descDSV;
-    ZeroMemory(&descDSV, sizeof(descDSV));
-    descDSV.Format = descDepth.Format;
-    descDSV.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
-    descDSV.Texture2D.MipSlice = 0;
-    hr = g_pd3dDevice->CreateDepthStencilView(g_pDepthStencil, &descDSV, &g_pDepthStencilView);
-    if (FAILED(hr))
-        return hr;
+    InitShaders();
 
-    g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, g_pDepthStencilView);
-
-    // Setup the viewport
-    vp.Width = (FLOAT)width;
-    vp.Height = (FLOAT)height;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    vp.TopLeftX = 0;
-    vp.TopLeftY = 0;
-    g_pImmediateContext->RSSetViewports(1, &vp);
-
-    CreateProcessShaders();
-    CreatePostProcessShaders();
-
-    // Create vertex buffer
-    SimpleVertex vertices[] =
-    {
-        { XMFLOAT3(-20.0f, 1.0f, -20.0f), XMFLOAT2(1.0f, 0.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
-        { XMFLOAT3(20.0f, 1.0f, -20.0f), XMFLOAT2(0.0f, 0.0f),  XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
-        { XMFLOAT3(20.0f, 1.0f, 20.0f), XMFLOAT2(0.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
-        { XMFLOAT3(-20.0f, 1.0f, 20.0f), XMFLOAT2(1.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f)},
+    D3D11_INPUT_ELEMENT_DESC layout[] = {
+          { "POS", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+          { "NOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
 
-    D3D11_BUFFER_DESC bd;
-    ZeroMemory(&bd, sizeof(bd));
-    bd.Usage = D3D11_USAGE_DEFAULT;
-    bd.ByteWidth = sizeof(SimpleVertex) * 24;
-    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    bd.CPUAccessFlags = 0;
-    D3D11_SUBRESOURCE_DATA InitData;
-    ZeroMemory(&InitData, sizeof(InitData));
-    InitData.pSysMem = vertices;
-    hr = g_pd3dDevice->CreateBuffer(&bd, &InitData, &g_pVertexBuffer);
-    if (FAILED(hr))
+    hr = g_pd3dDevice->CreateInputLayout(layout, ARRAYSIZE(layout), g_pBlob->GetBufferPointer(), g_pBlob->GetBufferSize(), &g_pInputVertexLayout);
+    if (FAILED(hr)) {
         return hr;
+    }
 
-    // Set vertex buffer
-    UINT stride = sizeof(SimpleVertex);
-    UINT offset = 0;
-    g_pImmediateContext->IASetVertexBuffers(0, 1, &g_pVertexBuffer, &stride, &offset);
-
-    // Create index buffer
-    // Create vertex buffer
-    WORD indices[] =
-    {
-        3,1,0,
-        2,1,3,
-    };
-
-    // setup camera
-    camera = Camera();
-
-    bd.Usage = D3D11_USAGE_DEFAULT;
-    bd.ByteWidth = sizeof(WORD) * 36;
-    bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
-    bd.CPUAccessFlags = 0;
-    InitData.pSysMem = indices;
-    hr = g_pd3dDevice->CreateBuffer(&bd, &InitData, &g_pIndexBuffer);
-    if (FAILED(hr))
-        return hr;
-
-    // Set index buffer
-    g_pImmediateContext->IASetIndexBuffer(g_pIndexBuffer, DXGI_FORMAT_R16_UINT, 0);
-
-    // Set primitive topology
-    g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    bd.ByteWidth = sizeof(CBChangesOnCameraAction);
-    hr = g_pd3dDevice->CreateBuffer(&bd, nullptr, &g_pCBChangesOnCameraAction);
-    if (FAILED(hr))
-        return hr;
-    bd.ByteWidth = sizeof(CBChangeOnResize);
-    hr = g_pd3dDevice->CreateBuffer(&bd, nullptr, &g_pCBChangeOnResize);
-    if (FAILED(hr))
-        return hr;
-
-    bd.ByteWidth = sizeof(CBChangesEveryFrame);
-    hr = g_pd3dDevice->CreateBuffer(&bd, nullptr, &g_pCBChangesEveryFrame);
-    if (FAILED(hr))
-        return hr;
-
-    CD3D11_BUFFER_DESC albd(sizeof(BrightnessConstantBuffer), D3D11_BIND_CONSTANT_BUFFER);
-    hr = g_pd3dDevice->CreateBuffer(&albd, nullptr, &m_pBrightnessBuffer);
-
-    // Load the Texture
-    hr = CreateDDSTextureFromFile(g_pd3dDevice, L"seafloor.dds", nullptr, &g_pTextureRV);
-    if (FAILED(hr))
-        return hr;
-
-    // Create the sample state
-    D3D11_SAMPLER_DESC sampDesc;
-    ZeroMemory(&sampDesc, sizeof(sampDesc));
-    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
-    sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
-    sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
-    sampDesc.MinLOD = 0;
-    sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
-    hr = g_pd3dDevice->CreateSamplerState(&sampDesc, &g_pSamplerLinear);
-    if (FAILED(hr))
-        return hr;
-
-    // Initialize the world matrices
+    g_sphereWorld = XMMatrixIdentity();
     g_World = XMMatrixIdentity();
+    g_View = XMMatrixIdentity();
+    g_Projection = XMMatrixIdentity();
 
-    // Initialize the view matrix
-    XMVECTOR Eye = XMVectorSet(0.0f, 13.0f, -2.5f, 0.0f);
-    XMVECTOR At = XMVectorSet(0.0f, 1.0f, 0.0f, 1.0f);
-    XMVECTOR Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    g_Eye = Eye;
-    g_At = At;
-    g_Up = Up;
-    g_View = XMMatrixLookAtLH(Eye, At, Up);
-    XMFLOAT4 tempEye;
-    XMStoreFloat4(&tempEye, g_Eye);
-    g_View = camera.GetViewMatrix();
-    CBChangesOnCameraAction cbChangesOnCameraAction;
-    cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
-    cbChangesOnCameraAction.Eye = tempEye;
-    g_pImmediateContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
 
-    // Initialize the projection matrix
-    g_Projection = XMMatrixPerspectiveFovLH(g_Zoom, width / (FLOAT)height, 0.01f, 100.0f);
+    ImGui::StyleColorsDark();
 
-    CBChangeOnResize cbChangesOnResize;
-    cbChangesOnResize.mProjection = XMMatrixTranspose(g_Projection);
-    g_pImmediateContext->UpdateSubresource(g_pCBChangeOnResize, 0, nullptr, &cbChangesOnResize, 0, 0);
-
-    CD3D11_TEXTURE2D_DESC ltd(
-        DXGI_FORMAT_R32G32B32A32_FLOAT,
-        1,
-        1,
-        1,
-        1,
-        0,
-        D3D11_USAGE_STAGING,
-        D3D11_CPU_ACCESS_READ
-    );
-    hr = g_pd3dDevice->CreateTexture2D(&ltd, nullptr, &g_pBrightnessTexture);
-    if (FAILED(hr))
-        return hr;
-    CreateLights();
-
-    g_pRenderTexture = new RenderTexture(DXGI_FORMAT_R32G32B32A32_FLOAT);
-    hr = g_pRenderTexture->CreateResources(g_pd3dDevice, width, height);
-    if (FAILED(hr))
-        return hr;
-
-    g_pAvLumProc = new AverageBrightnessProcess();
-    g_pAvLumProc->CreateResources(g_pd3dDevice, width, height);
-    g_pToneMapProc = new ToneMapProcess();
-    g_pToneMapProc->CreateResources(g_pd3dDevice);
-    return S_OK;
+    ImGui_ImplWin32_Init(g_hWnd);
+    ImGui_ImplDX11_Init(g_pd3dDevice, g_deviceContext);
+    InitScene();
 }
 
+ID3D11Buffer* createBuffer(ID3D11Device* p_device, UINT byteWidth, UINT bindFlags, const void* sysMem) {
+    D3D11_BUFFER_DESC bufferDescription = CD3D11_BUFFER_DESC(byteWidth, bindFlags);
+    D3D11_SUBRESOURCE_DATA initData = { 0 };
+    initData.pSysMem = sysMem;
+    ID3D11Buffer* p_buffer = nullptr;
+    HRESULT hr = p_device->CreateBuffer(&bufferDescription, sysMem ? &initData : nullptr, &p_buffer);
+    if (FAILED(hr)) {
+        return nullptr;
+    }
+    return p_buffer;
+}
+
+HRESULT ResizeResources(int width, int height) {
+    HRESULT hr;
+    vp = { 0.0f, 0.0f, (FLOAT)(width), (FLOAT)(height), 0.0f, 1.0f };
+
+    if (g_pDepthStencil) {
+        g_pDepthStencil->Release();
+    }
+
+    CD3D11_TEXTURE2D_DESC depthDescription(DXGI_FORMAT_D24_UNORM_S8_UINT, (UINT)width, (UINT)height, 1, 1, D3D11_BIND_DEPTH_STENCIL);
+    hr = g_pd3dDevice->CreateTexture2D(&depthDescription, nullptr, &g_pDepthStencil);
+    if (FAILED(hr)) { return hr; }
+
+    if (g_pDepthStencilView) {
+        g_pDepthStencilView->Release();
+    }
+
+    CD3D11_DEPTH_STENCIL_VIEW_DESC depth_stencil_view_desc(D3D11_DSV_DIMENSION_TEXTURE2D, depthDescription.Format);
+    hr = g_pd3dDevice->CreateDepthStencilView(g_pDepthStencil, &depth_stencil_view_desc, &g_pDepthStencilView);
+    if (FAILED(hr)) { return hr; }
+
+    float near_z = 0.01f, far_z = 100.0f;
+    g_Projection = XMMatrixPerspectiveFovLH(XM_PIDIV2, width / (FLOAT)height, near_z, far_z);
+
+    if (g_pRenderTexture) {
+        g_pRenderTexture->Clean();
+        delete g_pRenderTexture;
+    }
+    g_pRenderTexture = new RenderTexture(DXGI_FORMAT_R32G32B32A32_FLOAT);
+    g_pRenderTexture->CreateResources(g_pd3dDevice, width, height);
+}
+
+HRESULT Resize(int width, int height) {
+    HRESULT hr;
+    g_deviceContext->OMSetRenderTargets(0, 0, 0);
+
+    renderTargetView->Release();
+
+    g_deviceContext->Flush();
+
+    hr = g_pSwapChain->ResizeBuffers(0, (UINT)width, (UINT)height, DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(hr)) { return hr; }
+
+
+    ID3D11Texture2D* p_buffer;
+
+    hr = g_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&p_buffer);
+    if (FAILED(hr)) { return hr; }
+
+
+    hr = g_pd3dDevice->CreateRenderTargetView(p_buffer, nullptr, &renderTargetView);
+    if (FAILED(hr)) { return hr; }
+
+    p_buffer->Release();
+
+    g_deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
+
+    ResizeResources(width, height);
+}
+
+HRESULT InitScene() {
+    HRESULT hr;
+    camera = Camera();
+
+    g_Borders.Min = { -100.0f, -10.0f, -100.0f };
+    g_Borders.Max = { 100.0f, 10.0f, 100.0f };
+
+    Sphere sphere = Sphere(1.0f, 30, 30, true);
+    auto vertices = sphere.vertices;
+    auto indices = sphere.indices;
+
+    numIndices = (UINT)indices.size();
+    vertexStride = sizeof(SimpleVertex);
+    vertexOffset = 0;
+
+    camera = Camera();
+
+    ambientLight = (XMFLOAT4)Colors::Black;
+
+    lights[0].Pos = { 0.0f, 4.0f, -3.0f, 0.0f };
+    lights[0].Color = (XMFLOAT4)Colors::White;
+
+    g_sphereVertexBuffer = createBuffer(g_pd3dDevice, sizeof(SimpleVertex) * (UINT)vertices.size(), D3D11_BIND_VERTEX_BUFFER, vertices.data());
+    g_sphereIndexBuffer = createBuffer(g_pd3dDevice, sizeof(int) * numIndices, D3D11_BIND_INDEX_BUFFER, indices.data());
+    g_geometryConstantBuffer = createBuffer(g_pd3dDevice, sizeof(GeometryOperatorsConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
+    g_spropsConstantBuffer = createBuffer(g_pd3dDevice, sizeof(SpherePropsConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
+    g_lightConstantBuffer = createBuffer(g_pd3dDevice, sizeof(LightsConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
+
+
+    D3D11_SAMPLER_DESC samplerDesc;
+    ZeroMemory(&samplerDesc, sizeof(samplerDesc));
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    samplerDesc.MinLOD = 0;
+    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    hr = g_pd3dDevice->CreateSamplerState(&samplerDesc, &g_pSamplerLinear);
+    if (FAILED(hr)) { return hr; }
+
+    RECT winRect;
+    GetClientRect(g_hWnd, &winRect);
+    LONG width = winRect.right - winRect.left;
+    LONG height = winRect.bottom - winRect.top;
+    ResizeResources(width, height);
+
+
+    Sphere environment(1.0f, 10, 10, false);
+
+    auto& envVertices = environment.vertices;
+    g_environmentVertexBuffer = createBuffer(g_pd3dDevice, sizeof(SimpleVertex) * (UINT)envVertices.size(), D3D11_BIND_VERTEX_BUFFER, envVertices.data());
+
+    auto& envIndices = environment.indices;
+    numIndicesEnv = (UINT)envIndices.size();
+    g_environmentIndexBuffer = createBuffer(g_pd3dDevice, sizeof(unsigned) * numIndicesEnv, D3D11_BIND_INDEX_BUFFER, envIndices.data());
+
+    ID3D11Texture2D* envTexture = nullptr;
+    hr = CreateDDSTextureFromFileEx(g_pd3dDevice, L"earth-cubemap.dds", 0, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, D3D11_RESOURCE_MISC_TEXTURECUBE, true, (ID3D11Resource**)(&envTexture), &g_pTextureRV);
+    if (FAILED(hr)) { return hr; }
+    envTexture->Release();
+}
 
 //--------------------------------------------------------------------------------------
 // Clean up the objects we've created
 //--------------------------------------------------------------------------------------
+
+void ReleaseShaders() {
+
+    if (g_pVertexShader)               g_pVertexShader->Release();
+    if (g_pPixelShader)                g_pPixelShader->Release();
+    if (g_pVertexPostShader)           g_pVertexPostShader->Release();
+    if (g_pCopyPixelPostShader)        g_pCopyPixelPostShader->Release();
+    if (g_pBrightnessPixelPostShader)  g_pBrightnessPixelPostShader->Release();
+    if (g_pTonemapPixelPostShader)     g_pTonemapPixelPostShader->Release();
+    if (g_pPBRPixelShader)             g_pPBRPixelShader->Release();
+    if (g_pNormalDistPixelShader)      g_pNormalDistPixelShader->Release();
+    if (g_pGeometryPixelShader)        g_pGeometryPixelShader->Release();
+    if (g_pFresnelPixelShader)         g_pFresnelPixelShader->Release();
+    if (g_pVertexShaderCopy)           g_pVertexShaderCopy->Release();
+    if (g_pPixelShaderToneMapping)     g_pPixelShaderToneMapping->Release();
+    if (g_pEnvironmentVertexShader)    g_pEnvironmentVertexShader->Release();
+    if (g_pEnvironmentPixelShader)     g_pEnvironmentPixelShader->Release();
+}
+
+void CleanupBuffers() {
+    g_geometryConstantBuffer->Release();
+    g_spropsConstantBuffer->Release();
+    g_lightConstantBuffer->Release();
+    g_sphereVertexBuffer->Release();
+    g_sphereIndexBuffer->Release();
+    g_environmentVertexBuffer->Release();
+    g_environmentIndexBuffer->Release();
+}
+
+void QuitImgui() {
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+}
+
 void CleanupDevice()
 {
-    if (g_pImmediateContext) g_pImmediateContext->ClearState();
+    QuitImgui();
+    ReleaseShaders();
+    CleanupBuffers();
 
+    if (g_deviceContext) g_deviceContext->ClearState();
+    if (g_pInputVertexLayout) g_pInputVertexLayout->Release();
     if (g_pSamplerLinear) g_pSamplerLinear->Release();
     if (g_pTextureRV) g_pTextureRV->Release();
-    if (g_pCBChangesOnCameraAction) g_pCBChangesOnCameraAction->Release();
-    if (g_pCBChangeOnResize) g_pCBChangeOnResize->Release();
-    if (g_pCBChangesEveryFrame) g_pCBChangesEveryFrame->Release();
-    if (g_pVertexBuffer) g_pVertexBuffer->Release();
-    if (g_pIndexBuffer) g_pIndexBuffer->Release();
-    if (g_pVertexLayout) g_pVertexLayout->Release();
-    if (g_pVertexShader) g_pVertexShader->Release();
-    if (g_pPixelShader) g_pPixelShader->Release();
     if (g_pDepthStencil) g_pDepthStencil->Release();
     if (g_pDepthStencilView) g_pDepthStencilView->Release();
-    if (g_pRenderTargetView) g_pRenderTargetView->Release();
+    if (g_pDepthStencilState) g_pDepthStencilState->Release();
+    if (renderTargetView) renderTargetView->Release();
     if (g_pSwapChain) g_pSwapChain->Release();
-    if (g_pImmediateContext) g_pImmediateContext->Release();
+    if (g_deviceContext) g_deviceContext->Release();
     if (g_pd3dDevice) g_pd3dDevice->Release();
-    if (g_lightColorBuffer) g_lightColorBuffer->Release();
-    if (m_pBrightnessBuffer) m_pBrightnessBuffer->Release();
-    if (g_pVertexPostShader) g_pVertexPostShader->Release();
-    if (g_pCopyPixelPostShader) g_pCopyPixelPostShader->Release();
-    if (g_pBrightnessPixelPostShader) g_pBrightnessPixelPostShader->Release();
-    if (g_pTonemapPixelPostShader) g_pTonemapPixelPostShader->Release();
-    if (g_pBrightnessTexture) g_pBrightnessTexture->Release();
-
-    if (g_pRenderTexture) g_pRenderTexture->Clean();
-    if (g_pRenderTexture) delete g_pRenderTexture;
-    if (g_pAvLumProc) g_pAvLumProc->Clean();
-    if (g_pAvLumProc) delete g_pAvLumProc;
-    if (g_pToneMapProc) g_pToneMapProc->Clean();
-    if (g_pToneMapProc) delete g_pToneMapProc;
+    if (g_pBlob) g_pBlob->Release();
+    if (g_pRenderTexture) {
+        g_pRenderTexture->Clean();
+        delete g_pRenderTexture;
+    }
 }
 
-void ChangeViewOnAction(XMVECTOR move) {
-    g_Eye = XMVectorAdd(g_Eye, move);
-    g_At = XMVectorAdd(g_At, move);
-    XMVECTOR Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    g_View = XMMatrixLookAtLH(g_Eye, g_At, Up);
-    XMFLOAT4 tempEye;
-    XMStoreFloat4(&tempEye, g_Eye);
-
-    CBChangesOnCameraAction cbChangesOnCameraAction;
-    cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
-    cbChangesOnCameraAction.Eye = tempEye;
-    g_pImmediateContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
-}
-
-void ChangeCameraZoom(float mult) {
-    RECT rc;
-    GetClientRect(g_hWnd, &rc);
-    UINT width = rc.right - rc.left;
-    UINT height = rc.bottom - rc.top;
-    g_Zoom *= mult;
-    g_Projection = XMMatrixPerspectiveFovLH(g_Zoom, width / (FLOAT)height, 0.01f, 100.0f);
-
-    CBChangeOnResize cbChangesOnResize;
-    cbChangesOnResize.mProjection = XMMatrixTranspose(g_Projection);
-    g_pImmediateContext->UpdateSubresource(g_pCBChangeOnResize, 0, nullptr, &cbChangesOnResize, 0, 0);
-}
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 //--------------------------------------------------------------------------------------
 // Called every time the application receives a message
 //--------------------------------------------------------------------------------------
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    if (ImGui_ImplWin32_WndProcHandler(hWnd, message, wParam, lParam)) {
+        return true;
+    }
     PAINTSTRUCT ps;
     HDC hdc;
     static POINT cursor;
-    static float mouse_sence = 5e-3f;
-    float speed = 8.0f;
+    static float mouseSence = 6e-3f;
+    float speed = 9.0f;
+    float moveUnit = 0.1f;
 
     switch (message)
     {
@@ -720,84 +702,64 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
 
     case WM_SIZE:
-        if (g_pSwapChain)
-        {
-            ChangeCameraZoom(1.0);
-            g_pImmediateContext->OMSetRenderTargets(0, 0, 0);
-
-            // Release all outstanding references to the swap chain's buffers.
-            g_pRenderTargetView->Release();
-
-            HRESULT hr;
-            // Preserve the existing buffer count and format.
-            // Automatically choose the width and height to match the client rect for HWNDs.
-            hr = g_pSwapChain->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
-
-            if (SUCCEEDED(hr)) {
-                hr = SetView(LOWORD(lParam), HIWORD(lParam));
-            }
-            if (FAILED(hr))
-            {
-                PostQuitMessage(0);
-            }
+        if (g_pSwapChain) {
+            int width = LOWORD(lParam);
+            int height = HIWORD(lParam);
+            Resize(width, height);
         }
-        break;
 
     case WM_KEYDOWN:
-
         XMVECTOR orth = XMVector3Cross(g_At, g_Up);
-        XMVECTOR move = XMVECTOR();
         switch (wParam)
         {
         case VK_LEFT:
-            move = XMVectorSet(speed * .1f, 0.0f, 0.0f, 0.0f) * (-1);
-            camera.Move(XMVectorGetX(move), XMVectorGetY(move), XMVectorGetZ(move));
+            camera.MoveTangent(-moveUnit);
+            camera.PositionClip(g_Borders);
             break;
         case VK_RIGHT:
-            move = XMVectorSet(speed * .1f, 0.0f, 0.0f, 0.0f);
-            camera.Move(XMVectorGetX(move), XMVectorGetY(move), XMVectorGetZ(move));
+            camera.MoveTangent(moveUnit);
+            camera.PositionClip(g_Borders);
             break;
         case VK_UP:
-            move = XMVectorSet(0.0f, 0.0f, speed * .1f, 0.0f);
-            camera.Move(XMVectorGetX(move), XMVectorGetY(move), XMVectorGetZ(move));
+            camera.MoveNormal(moveUnit);
+            camera.PositionClip(g_Borders);
             break;
         case VK_DOWN:
-            move = XMVectorSet(0.0f, 0.0f, speed * .1f, 0.0f) * (-1);
-            camera.Move(XMVectorGetX(move), XMVectorGetY(move), XMVectorGetZ(move));
-            break;
-        case VK_ADD:
-            ChangeCameraZoom(0.8f);
-            break;
-        case VK_SUBTRACT:
-            ChangeCameraZoom(1.25f);
+            camera.MoveNormal(-moveUnit);
+            camera.PositionClip(g_Borders);
             break;
         }
         break;
 
     case WM_LBUTTONDOWN:
-        ShowCursor(false);
+        if (ImGui::GetIO().WantCaptureMouse) {
+            break;
+        }
+        while (ShowCursor(false) >= 0);
         GetCursorPos(&cursor);
-        SetCursorPos(cursor.x, cursor.y);
         return 0;
 
     case WM_MOUSEMOVE:
+        if (ImGui::GetIO().WantCaptureMouse) {
+            break;
+        }
         if (wParam == MK_LBUTTON)
         {
-            POINT current_pos;
-            int dx, dy;
-            GetCursorPos(&current_pos);
-            dx = current_pos.x - cursor.x;
-            dy = current_pos.y - cursor.y;
+            POINT currentPos;
+            GetCursorPos(&currentPos);
+            int dx = currentPos.x - cursor.x;
+            int dy = currentPos.y - cursor.y;
+            camera.RotateHorisontal(dx * mouseSence);
+            camera.RotateVertical(dy * mouseSence);
             SetCursorPos(cursor.x, cursor.y);
-            camera.RotateHorisontal(dx * mouse_sence);
-            if (dy != 0)
-            {
-                camera.RotateVertical(dy * mouse_sence);
-            }
         }
+
         return 0;
 
     case WM_LBUTTONUP:
+        if (ImGui::GetIO().WantCaptureMouse) {
+            break;
+        }
         SetCursorPos(cursor.x, cursor.y);
         ShowCursor(true);
         return 0;
@@ -806,212 +768,145 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     return DefWindowProc(hWnd, message, wParam, lParam);;
 }
 
-HRESULT SetView(UINT width, UINT height)
-{
-    HRESULT hr;
-    // Get buffer and create a render-target-view.
-    ID3D11Texture2D* pBuffer;
-    hr = g_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D),
-        (void**)&pBuffer);
-    if (FAILED(hr))
-        return hr;
-    hr = g_pd3dDevice->CreateRenderTargetView(pBuffer, NULL,
-        &g_pRenderTargetView);
-    if (FAILED(hr))
-        return hr;
-    pBuffer->Release();
 
-    g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, NULL);
+void Render() {
+    auto rtv = renderMode == RenderMode::PBR ? g_pRenderTexture->GetRenderTargetView() : renderTargetView;
 
-    // Set up the viewport.
-    vp.Width = (FLOAT)width;
-    vp.Height = (FLOAT)height;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    vp.TopLeftX = 0;
-    vp.TopLeftY = 0;
-    g_pImmediateContext->RSSetViewports(1, &vp);
+    ID3D11PixelShader* ps = nullptr;
 
-    return S_OK;
-}
-
-
-HRESULT CreateLights()
-{
-    HRESULT hr = S_OK;
-    XMFLOAT4 LightPositions[NUM_LIGHTS] =
-    {
-        XMFLOAT4(4.0f, 4.0f, 2.0f, 1.0f),
-        XMFLOAT4(0.0f, 4.0f, 0.0f, 1.0f),
-        XMFLOAT4(0.0f, 4.0f, 4.0f, 1.0f)
-    };
-
-    XMFLOAT4 LightColors[NUM_LIGHTS] =
-    {
-        XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f),
-        XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f),
-        XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f)
-    };
-
-    LightConstantBuffer lcb1;
-    for (int i = 0; i < NUM_LIGHTS; i++)
-    {
-        lcb1.vLightColor[i] = LightColors[i];
-        lcb1.vLightPos[i] = LightPositions[i];
+    switch (renderMode) {
+    case RenderMode::PBR:
+        ps = g_pPBRPixelShader;
+        break;
+    case RenderMode::NORMAL_DISTR:
+        ps = g_pNormalDistPixelShader;
+        break;
+    case RenderMode::GEOMETRY:
+        ps = g_pGeometryPixelShader;
+        break;
+    case RenderMode::FRESNEL:
+        ps = g_pFresnelPixelShader;
+        break;
     }
-    // Create the constant buffers for lights
-    D3D11_BUFFER_DESC lpbd;
-    ZeroMemory(&lpbd, sizeof(lpbd));
-    lpbd.Usage = D3D11_USAGE_DEFAULT;
-    lpbd.ByteWidth = sizeof(LightConstantBuffer);
-    lpbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    lpbd.CPUAccessFlags = 0;
-    hr = g_pd3dDevice->CreateBuffer(&lpbd, nullptr, &g_lightColorBuffer);
-    if (FAILED(hr))
-        return hr;
-    g_pImmediateContext->UpdateSubresource(g_lightColorBuffer, 0, nullptr, &lcb1, 0, 0);
-    return hr;
-}
-
-void CopyTexture(ID3D11DeviceContext* context, ID3D11ShaderResourceView* sourceTexture,
-    RenderTexture& dst, ID3D11PixelShader* pixelShader)
-{
-    ID3D11RenderTargetView* renderTarget = dst.GetRenderTargetView();
-
-    D3D11_VIEWPORT viewport = dst.GetViewPort();
-
-    context->OMSetRenderTargets(1, &renderTarget, nullptr);
-    context->RSSetViewports(1, &viewport);
-
-    context->PSSetShader(pixelShader, nullptr, 0);
-    context->PSSetShaderResources(0, 1, &sourceTexture);
-
-    context->Draw(4, 0);
-
-    ID3D11ShaderResourceView* nullsrv[] = { nullptr };
-    context->PSSetShaderResources(0, 1, nullsrv);
-}
-
-void PostRender()
-{
-    ID3D11ShaderResourceView* sourceTexture = g_pRenderTexture->GetShaderResourceView();
-    if (g_pAvLumProc->renderTextures.size() == 0)
-        return;
-    float backgroundColour[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-    for (size_t i = 0; i < g_pAvLumProc->renderTextures.size(); i++)
-        g_pImmediateContext->ClearRenderTargetView(g_pAvLumProc->renderTextures[i].GetRenderTargetView(), backgroundColour);
-
-    g_pImmediateContext->IASetInputLayout(nullptr);
-    g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-
-    g_pImmediateContext->VSSetShader(g_pVertexPostShader, nullptr, 0);
-
-    g_pImmediateContext->PSSetSamplers(0, 1, &(g_pAvLumProc->pSamplerState));
-
-    CopyTexture(g_pImmediateContext, sourceTexture, g_pAvLumProc->renderTextures[0], g_pCopyPixelPostShader);
-    CopyTexture(g_pImmediateContext, g_pAvLumProc->renderTextures[0].GetShaderResourceView(), g_pAvLumProc->renderTextures[1], g_pBrightnessPixelPostShader);
-
-    for (size_t i = 2; i < g_pAvLumProc->renderTextures.size(); i++)
-    {
-        CopyTexture(g_pImmediateContext, g_pAvLumProc->renderTextures[i - 1].GetShaderResourceView(), g_pAvLumProc->renderTextures[i], g_pCopyPixelPostShader);
-    }
-
-    ID3D11ShaderResourceView* nullsrv[] = { nullptr };
-    g_pImmediateContext->PSSetShaderResources(0, 1, nullsrv);
-
-    LARGE_INTEGER currentTime;
-    QueryPerformanceCounter(&currentTime);
-    size_t timeDelta = currentTime.QuadPart - g_pAvLumProc->lastTime.QuadPart;
-    g_pAvLumProc->lastTime = currentTime;
-    double delta = static_cast<double>(timeDelta) / g_pAvLumProc->frequency.QuadPart;
-
-    D3D11_MAPPED_SUBRESOURCE BrightnessAccessor;
-    g_pImmediateContext->CopyResource(g_pBrightnessTexture, g_pAvLumProc->renderTextures[g_pAvLumProc->renderTextures.size() - 1].GetRenderTarget());
-    g_pImmediateContext->Map(g_pBrightnessTexture, 0, D3D11_MAP_READ, 0, &BrightnessAccessor);
-    float Brightness = *(float*)BrightnessAccessor.pData;
-    g_pImmediateContext->Unmap(g_pBrightnessTexture, 0);
-
-    float sigma = 0.04f / (0.04f + Brightness);
-    float tau = sigma * 0.4f + (1 - sigma) * 0.1f;
-
-    g_adaptedBrightness += (Brightness - g_adaptedBrightness) * static_cast<float>(1 - exp(-delta * tau));
-    BrightnessConstantBuffer BrightnessBufferData = { g_adaptedBrightness };
-    g_pImmediateContext->UpdateSubresource(m_pBrightnessBuffer, 0, nullptr, &BrightnessBufferData, 0, 0);
-
-    g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, nullptr);
-    g_pImmediateContext->RSSetViewports(1, &vp);
-
-    g_pImmediateContext->IASetInputLayout(nullptr);
-    g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-
-    g_pImmediateContext->VSSetShader(g_pVertexPostShader, nullptr, 0);
-    g_pImmediateContext->PSSetShader(g_pTonemapPixelPostShader, nullptr, 0);
-    g_pImmediateContext->PSSetConstantBuffers(0, 1, &m_pBrightnessBuffer);
-    g_pImmediateContext->PSSetShaderResources(0, 1, &sourceTexture);
-    g_pImmediateContext->PSSetSamplers(0, 1, &(g_pToneMapProc->pSamplerState));
-
-    g_pImmediateContext->Draw(4, 0);
-
-    g_pImmediateContext->PSSetShaderResources(0, 1, nullsrv);
-
-
-}
-//--------------------------------------------------------------------------------------
-// Render a frame
-//--------------------------------------------------------------------------------------
-void Render()
-{
-    // Clear the back buffer
-    //
-    g_pImmediateContext->ClearRenderTargetView(g_pRenderTargetView, Colors::MidnightBlue);
-    g_pImmediateContext->ClearRenderTargetView(g_pRenderTexture->GetRenderTargetView(), Colors::MidnightBlue);
-    //
-    // Clear the depth buffer to 1.0 (max depth)
-    //
-    g_pImmediateContext->ClearDepthStencilView(g_pDepthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
-    ID3D11RenderTargetView* renderTarget = g_pRenderTexture->GetRenderTargetView();
-    D3D11_VIEWPORT viewport = g_pRenderTexture->GetViewPort();
-
-    g_pImmediateContext->OMSetRenderTargets(1, &renderTarget, g_pDepthStencilView);
-    g_pImmediateContext->RSSetViewports(1, &viewport);
     UINT stride = sizeof(SimpleVertex);
     UINT offset = 0;
-    g_pImmediateContext->IASetVertexBuffers(0, 1, &g_pVertexBuffer, &stride, &offset);
-    g_pImmediateContext->IASetIndexBuffer(g_pIndexBuffer, DXGI_FORMAT_R16_UINT, 0);
 
-    // Set primitive topology
-    g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    XMVECTORF32 bgrColor = { 0.05f, 0.05f, 0.1f, 1.0f };
+    g_deviceContext->ClearRenderTargetView(rtv, bgrColor.f);
+    g_deviceContext->ClearDepthStencilView(g_pDepthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
 
-    // Update variables that change once per frame
-    //
-    CBChangesEveryFrame cb;
-    cb.mWorld = XMMatrixTranspose(g_World);
+    g_deviceContext->RSSetViewports(1, &vp);
+
+    g_deviceContext->OMSetRenderTargets(1, &rtv, g_pDepthStencilView);
+    g_deviceContext->OMSetDepthStencilState(g_pDepthStencilState, 0);
+
+    g_deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    g_deviceContext->IASetInputLayout(g_pInputVertexLayout);
+    g_deviceContext->IASetVertexBuffers(0, 1, &g_sphereVertexBuffer, &stride, &offset);
+    g_deviceContext->IASetIndexBuffer(g_sphereIndexBuffer, DXGI_FORMAT_R32_UINT, 0);
 
     g_View = camera.GetViewMatrix();
-    CBChangesOnCameraAction cbChangesOnCameraAction;
-    cbChangesOnCameraAction.mView = XMMatrixTranspose(g_View);
-    g_pImmediateContext->UpdateSubresource(g_pCBChangesOnCameraAction, 0, nullptr, &cbChangesOnCameraAction, 0, 0);
-    g_pImmediateContext->UpdateSubresource(g_pCBChangesEveryFrame, 0, nullptr, &cb, 0, 0);
-    // Set the input layout
-    g_pImmediateContext->IASetInputLayout(g_pVertexLayout);
-    //
-    // Render the cube
-    //
-    g_pImmediateContext->VSSetShader(g_pVertexShader, nullptr, 0);
-    g_pImmediateContext->VSSetConstantBuffers(0, 1, &g_pCBChangesOnCameraAction);
-    g_pImmediateContext->VSSetConstantBuffers(1, 1, &g_pCBChangeOnResize);
-    g_pImmediateContext->VSSetConstantBuffers(2, 1, &g_pCBChangesEveryFrame);
-    g_pImmediateContext->VSSetConstantBuffers(3, 1, &g_lightColorBuffer);
+    XMFLOAT4 cameraPosition;
+    XMStoreFloat4(&cameraPosition, camera.Pos);
 
-    g_pImmediateContext->PSSetShader(g_pPixelShader, nullptr, 0);
-    g_pImmediateContext->PSSetConstantBuffers(2, 1, &g_pCBChangesEveryFrame);
-    g_pImmediateContext->PSSetConstantBuffers(3, 1, &g_lightColorBuffer);
-    g_pImmediateContext->PSSetShaderResources(0, 1, &g_pTextureRV);
+    GeometryOperatorsConstantBuffer geometryCB;
+    geometryCB.world = XMMatrixTranspose(g_World);
+    geometryCB.worldNormals = XMMatrixInverse(nullptr, g_World);
+    geometryCB.view = XMMatrixTranspose(g_View);
+    geometryCB.projection = XMMatrixTranspose(g_Projection);
+    geometryCB.cameraPos = cameraPosition;
 
-    g_pImmediateContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
-    g_pImmediateContext->DrawIndexed(6, 0, 0);
+    g_deviceContext->UpdateSubresource(g_geometryConstantBuffer, 0, nullptr, &geometryCB, 0, 0);
 
-    PostRender();
+    float sphereColor[4];
+    for (int i = 0; i < 4; ++i) {
+        sphereColor[i] = powf(sphereColorRGB[i], 2.2f);
+    }
+    sphereColorSRGB = XMFLOAT4(sphereColor);
+    SpherePropsConstantBuffer sprops_cbuffer = { sphereColorSRGB, roughness, metalness };
+    g_deviceContext->UpdateSubresource(g_spropsConstantBuffer, 0, nullptr, &sprops_cbuffer, 0, 0);
 
-    g_pSwapChain->Present(0, 0);
+    LightsConstantBuffer lightsConstBuffer;
+    lightsConstBuffer.ambientLight = ambientLight;
+    for (int i = 0; i < NUM_LIGHTS; i++) {
+        lightsConstBuffer.lightPos[i] = lights[i].Pos;
+        lightsConstBuffer.lightColor[i] = lights[i].Color;
+        XMFLOAT4 att(lights[i].constAttenuation, lights[i].linearAttenuation, lights[i].expAttenuation, 0.0f);
+        lightsConstBuffer.lightAttenuation[i] = att;
+        lightsConstBuffer.lightIntensity[0] = intensity;
+    }
+    g_deviceContext->UpdateSubresource(g_lightConstantBuffer, 0, nullptr, &lightsConstBuffer, 0, 0);
+    g_deviceContext->VSSetShader(g_pVertexShader, nullptr, 0);
+    g_deviceContext->VSSetConstantBuffers(0, 1, &g_geometryConstantBuffer);
+    g_deviceContext->PSSetShader(ps, nullptr, 0);
+    g_deviceContext->PSSetConstantBuffers(0, 1, &g_geometryConstantBuffer);
+    g_deviceContext->PSSetConstantBuffers(1, 1, &g_spropsConstantBuffer);
+    g_deviceContext->PSSetConstantBuffers(2, 1, &g_lightConstantBuffer);
+
+    g_deviceContext->DrawIndexed(numIndices, 0, 0);
+
+    g_deviceContext->IASetVertexBuffers(0, 1, &g_environmentVertexBuffer, &stride, &offset);
+    g_deviceContext->IASetIndexBuffer(g_environmentIndexBuffer, DXGI_FORMAT_R32_UINT, 0);
+
+    auto scale = XMMatrixScaling(5, 5, 5);
+    auto translation = XMMatrixTranslation(cameraPosition.x, cameraPosition.y, cameraPosition.z);
+    g_sphereWorld = scale * translation;
+
+    geometryCB.world = XMMatrixTranspose(g_sphereWorld);
+
+    g_deviceContext->UpdateSubresource(g_geometryConstantBuffer, 0, nullptr, &geometryCB, 0, 0);
+
+    g_deviceContext->VSSetShader(g_pEnvironmentVertexShader, nullptr, 0);
+    g_deviceContext->VSSetConstantBuffers(0, 1, &g_geometryConstantBuffer);
+    g_deviceContext->PSSetShader(g_pEnvironmentPixelShader, nullptr, 0);
+
+    g_deviceContext->PSSetShaderResources(0, 1, &g_pTextureRV);
+    g_deviceContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
+
+    g_deviceContext->DrawIndexed(numIndicesEnv, 0, 0);
+
+    if (renderMode == RenderMode::PBR) {
+
+        g_deviceContext->ClearRenderTargetView(renderTargetView, Colors::Black.f);
+
+        g_deviceContext->RSSetViewports(1, &vp);
+
+        g_deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
+
+        g_deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        g_deviceContext->IASetInputLayout(nullptr);
+
+        g_deviceContext->VSSetShader(g_pVertexShaderCopy, nullptr, 0);
+        g_deviceContext->PSSetShader(g_pPixelShaderToneMapping, nullptr, 0);
+
+        auto srv = g_pRenderTexture->GetShaderResourceView();
+        g_deviceContext->PSSetShaderResources(0, 1, &srv);
+        g_deviceContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
+
+        g_deviceContext->Draw(4, 0);
+
+        ID3D11ShaderResourceView* nullsrv[] = { nullptr };
+        g_deviceContext->PSSetShaderResources(0, 1, nullsrv);
+    }
+
+
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+    ImGui::Begin("Scene parameters");
+    ImGui::Text("Scene");
+    ImGui::ListBox("Render mode", (int*)(&renderMode), renderModes, NUM_RENDER_MODES);
+    ImGui::Text("Object");
+    ImGui::SliderFloat("Roughness", &roughness, 0, 1);
+    ImGui::SliderFloat("Metalness", &metalness, 0, 1);
+    ImGui::SliderFloat("Light Intensity (PBR)", &intensity, 0, 3000);
+    ImGui::ColorEdit3("Metal F0", sphereColorRGB);
+    ImGui::End();
+
+    ImGui::Render();
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+
+    g_pSwapChain->Present(1, 0);
+
+
 }
