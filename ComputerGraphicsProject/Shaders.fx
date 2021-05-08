@@ -71,8 +71,7 @@ float3 projectedRadiance(int index, float3 pos, float3 normal)
     const float3 lightDir = lightPos[index].xyz - pos;
     const float dist = length(lightDir);
     const float dotMult = pow(saturate(dot(lightDir / dist, normal)), deg);
-    float att = lightAtten[index].x + lightAtten[index].y * dist;
-    att += lightAtten[index].z * dist * dist;
+    float att = lightAtten[index].x + lightAtten[index].y * dist * dist;
     return lightIntensity[index] * dotMult / att * lightColor[index].rgb;
 }
 

@@ -831,7 +831,7 @@ void Render() {
     for (int i = 0; i < NUM_LIGHTS; i++) {
         lightsConstBuffer.lightPos[i] = lights[i].Pos;
         lightsConstBuffer.lightColor[i] = lights[i].Color;
-        XMFLOAT4 att(lights[i].constAttenuation, lights[i].linearAttenuation, lights[i].expAttenuation, 0.0f);
+        XMFLOAT4 att(lights[i].constAttenuation, lights[i].quadraticAttenuation, 0.0f, 0.0f);
         lightsConstBuffer.lightAttenuation[i] = att;
         lightsConstBuffer.lightIntensity[0] = intensity;
     }
