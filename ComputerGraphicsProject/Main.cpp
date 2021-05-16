@@ -83,8 +83,12 @@ ID3D11Buffer* g_spropsConstantBuffer = nullptr;
 
 
 ID3D11ShaderResourceView* g_pTextureRV = nullptr;
-ID3D11ShaderResourceView* g_pIrradiance = nullptr;
-ID3D11SamplerState* g_pSamplerLinear = nullptr;
+ID3D11ShaderResourceView* g_pIrradianceRV = nullptr;
+ID3D11ShaderResourceView* g_pEnvPrefilteredRV = nullptr;
+ID3D11ShaderResourceView* g_pEnvPreintegratedRV = nullptr;
+
+ID3D11SamplerState* g_pMinMagMipLinear = nullptr;
+ID3D11SamplerState* g_pMinMagMipLinearBorder = nullptr;
 
 XMMATRIX  g_sphereWorld;
 XMMATRIX  g_World;
@@ -110,8 +114,8 @@ ID3D11PixelShader* g_pGeometryPixelShader = nullptr;
 ID3D11PixelShader* g_pFresnelPixelShader = nullptr;
 
 
-ID3D11VertexShader* g_pVertexShaderCopy = nullptr;
-ID3D11PixelShader* g_pPixelShaderToneMapping = nullptr;
+ID3D11VertexShader* g_pCopyVertexShader = nullptr;
+ID3D11PixelShader* g_pToneMappingPixelShader = nullptr;
 
 ID3D11VertexShader* g_pEnvironmentVertexShader = nullptr;
 ID3D11PixelShader* g_pEnvironmentPixelShader = nullptr;
@@ -119,6 +123,8 @@ ID3D11PixelShader* g_pEnvironmentPixelShader = nullptr;
 ID3D11PixelShader* g_pCubeMapPixelShader = nullptr;
 ID3D11PixelShader* g_pIrradianceMapPixelShader = nullptr;
 
+ID3D11PixelShader* g_pPrefilteredColorPixelShader = nullptr;
+ID3D11PixelShader* g_pPreintegratedBRDFPixelShader = nullptr;
 
 D3D11_VIEWPORT vp;
 
@@ -339,12 +345,12 @@ HRESULT InitShaders() {
         return hr;
     }
 
-    hr = CreateVS(shaderFileName, "vsCopyMain", &g_pVertexShaderCopy);
+    hr = CreateVS(shaderFileName, "vsCopyMain", &g_pCopyVertexShader);
     if (FAILED(hr)) {
         return hr;
     }
 
-    hr = CreatePS(shaderFileName, "psToneMappingMain", &g_pPixelShaderToneMapping);
+    hr = CreatePS(shaderFileName, "psToneMappingMain", &g_pToneMappingPixelShader);
     if (FAILED(hr)) {
         return hr;
     }
@@ -358,6 +364,17 @@ HRESULT InitShaders() {
     if (FAILED(hr)) {
         return hr;
     }
+
+    hr = CreatePS(shaderFileName, "psPrefilteredColor", &g_pPrefilteredColorPixelShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    hr = CreatePS(shaderFileName, "psPreintegratedBRDF", &g_pPreintegratedBRDFPixelShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
 }
 
 HRESULT Init() {
@@ -563,10 +580,81 @@ HRESULT Resize(int width, int height) {
     ResizeResources(width, height);
 }
 
-HRESULT CreateCubeMap(UINT size, ID3D11PixelShader* pixelShader, ID3D11ShaderResourceView** srcEnvironmentRV, ID3D11ShaderResourceView** dstEnvironmentRV) {
+HRESULT CreatePreintegratedBRDF(UINT size) {
+
+    CD3D11_TEXTURE2D_DESC smDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, size, size, 1, 1);
+    ID3D11Texture2D* smTexture = nullptr;
+    HRESULT hr = g_pd3dDevice->CreateTexture2D(&smDesc, nullptr, &smTexture);
+    if (FAILED(hr)) { return hr; }
+
+    RenderTexture rt(DXGI_FORMAT_R32G32B32A32_FLOAT);
+    rt.CreateResources(g_pd3dDevice, size, size);
+
+    auto renderTargetView = rt.GetRenderTargetView();
+    g_deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
+
+    D3D11_VIEWPORT vp = { 0, 0, (FLOAT)size, (FLOAT)size, 0, 1 };
+    g_deviceContext->RSSetViewports(1, &vp);
+
+    g_deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    g_deviceContext->IASetInputLayout(g_pInputVertexLayout);
+
+    SimpleVertex vertices[4] = {
+        { { 0.0f, 0.0f, 0.5f } },
+        { { 0.0f, 1.0f, 0.5f } },
+        { { 1.0f, 1.0f, 0.5f } },
+        { { 1.0f, 0.0f, 0.5f } }
+    };
+
+    unsigned indices[6] = {
+        0, 1, 2,
+        2, 3, 0
+    };
+
+    auto indexBuffer = createBuffer(g_pd3dDevice, sizeof(unsigned) * 6, D3D11_BIND_INDEX_BUFFER, indices);
+    g_deviceContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, 0);
+    indexBuffer->Release();
+
+    g_deviceContext->VSSetShader(g_pVertexShader, nullptr, 0);
+    g_deviceContext->PSSetShader(g_pPreintegratedBRDFPixelShader, nullptr, 0);
+
+    GeometryOperatorsConstantBuffer geometryConstantBuffer;
+    geometryConstantBuffer.world = XMMatrixTranspose(XMMatrixIdentity());
+    geometryConstantBuffer.projection = XMMatrixTranspose(XMMatrixPerspectiveFovLH(XM_PIDIV2, 1, 0.01f, 1));
+
+    auto vertexBuffer = createBuffer(g_pd3dDevice, sizeof(SimpleVertex) * 4, D3D11_BIND_VERTEX_BUFFER, vertices);
+    g_deviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
+    vertexBuffer->Release();
+
+    XMVECTOR position = { 0.5f, 0.5f, 0.0f };
+    XMVECTOR dir = { 0.0f, 0.0f, 1.0f };
+    XMVECTOR up = { 0.0f, 1.0f, 0.0f };
+    XMVECTOR focus = XMVectorAdd(position, dir);
+    auto viewMatrix = XMMatrixLookAtLH(position, focus, up);
+
+    geometryConstantBuffer.view = XMMatrixTranspose(viewMatrix);
+    g_deviceContext->UpdateSubresource(g_geometryConstantBuffer, 0, nullptr, &geometryConstantBuffer, 0, 0);
+    g_deviceContext->VSSetConstantBuffers(0, 1, &g_geometryConstantBuffer);
+
+    g_deviceContext->ClearRenderTargetView(renderTargetView, Colors::Black);
+    g_deviceContext->DrawIndexed(6, 0, 0);
+    g_deviceContext->CopySubresourceRegion(smTexture, 0, 0, 0, 0, rt.GetRenderTarget(), 0, nullptr);
+
+    ID3D11ShaderResourceView* nullsrv[] = { nullptr };
+    g_deviceContext->PSSetShaderResources(0, 1, nullsrv);
+
+    CD3D11_SHADER_RESOURCE_VIEW_DESC envRVDesc(D3D11_SRV_DIMENSION_TEXTURE2D, smDesc.Format, 0, smDesc.MipLevels);
+    hr = g_pd3dDevice->CreateShaderResourceView(smTexture, &envRVDesc, &g_pEnvPreintegratedRV);
+    if (FAILED(hr)) { return hr; }
+
+    smTexture->Release();
+    rt.Clean();
+}
+
+HRESULT CreateCubeMap(UINT size, UINT mipLevels, ID3D11PixelShader* pixelShader, ID3D11ShaderResourceView** srcEnvironmentRV, ID3D11ShaderResourceView** dstEnvironmentRV) {
     const int numSides = 6;
-    CD3D11_TEXTURE2D_DESC environmentDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, size, size, numSides, 1, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0, 1, 0, D3D11_RESOURCE_MISC_TEXTURECUBE);
-    
+    CD3D11_TEXTURE2D_DESC environmentDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, size, size, numSides, mipLevels, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0, 1, 0, D3D11_RESOURCE_MISC_TEXTURECUBE);
+
     ID3D11Texture2D* envTexture = nullptr;
     HRESULT hr = g_pd3dDevice->CreateTexture2D(&environmentDesc, nullptr, &envTexture);
     if (FAILED(hr)) { return hr; }
@@ -574,16 +662,10 @@ HRESULT CreateCubeMap(UINT size, ID3D11PixelShader* pixelShader, ID3D11ShaderRes
     RenderTexture rt(DXGI_FORMAT_R32G32B32A32_FLOAT);
     rt.CreateResources(g_pd3dDevice, size, size);
 
-    auto rtv = rt.GetRenderTargetView();
-    g_deviceContext->OMSetRenderTargets(1, &rtv, nullptr);
-
-    D3D11_VIEWPORT vp = { 0.0f, 0.0f, (FLOAT)size, (FLOAT)size, 0.0f, 1.0f };
-    g_deviceContext->RSSetViewports(1, &vp);
-
     g_deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     g_deviceContext->IASetInputLayout(g_pInputVertexLayout);
 
-    SimpleVertex verts[numSides][4] = {
+    SimpleVertex vertices[numSides][4] = {
         { { { 1.0f, -1.0f, 1.0f } }, { { 1.0f, 1.0f, 1.0f } }, { { 1.0f, 1.0f, -1.0f } }, { { 1.0f, -1.0f, -1.0f } } },
         { { { -1.0f, -1.0f, -1.0f } }, { { -1.0f, 1.0f, -1.0f } }, { { -1.0f, 1.0f, 1.0f } }, { { -1.0f, -1.0f, 1.0f } } },
         { { { -1.0f, 1.0f, 1.0f } }, { { -1.0f, 1.0f, -1.0f } }, { { 1.0f, 1.0f, -1.0f } }, { { 1.0f, 1.0f, 1.0f } } },
@@ -623,33 +705,47 @@ HRESULT CreateCubeMap(UINT size, ID3D11PixelShader* pixelShader, ID3D11ShaderRes
     g_deviceContext->PSSetShader(pixelShader, nullptr, 0);
 
     g_deviceContext->PSSetShaderResources(0, 1, srcEnvironmentRV);
-    g_deviceContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
+    g_deviceContext->PSSetSamplers(0, 1, &g_pMinMagMipLinear);
 
     GeometryOperatorsConstantBuffer geometryConstantBuffer;
     geometryConstantBuffer.world = XMMatrixTranspose(XMMatrixIdentity());
     geometryConstantBuffer.projection = XMMatrixTranspose(XMMatrixPerspectiveFovLH(XM_PIDIV2, 1.0f, 0.01f, 1.0f));
+    for (int mipLevel = 0; mipLevel < mipLevels; mipLevel++) {
+        rt.Clean();
+        rt.CreateResources(g_pd3dDevice, size >> mipLevel, size >> mipLevel);
 
-    for (size_t i = 0; i < numSides; i++) {
-        auto vertexBuffer = createBuffer(g_pd3dDevice, sizeof(SimpleVertex) * 4, D3D11_BIND_VERTEX_BUFFER, verts[i]);
-        g_deviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
-        vertexBuffer->Release();
+        auto renderTargetView = rt.GetRenderTargetView();
+        g_deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
 
-        XMVECTOR position = { 0.0f, 0.0f, 0.0f };
-        XMVECTOR focus = XMVectorAdd(position, dirs[i]);
-        auto viewMatrix = XMMatrixLookAtLH(position, focus, ups[i]);
+        D3D11_VIEWPORT vp = { 0, 0, (FLOAT)(size >> mipLevel), (FLOAT)(size >> mipLevel), 0, 1 };
+        g_deviceContext->RSSetViewports(1, &vp);
 
-        geometryConstantBuffer.view = XMMatrixTranspose(viewMatrix);
-        g_deviceContext->UpdateSubresource(g_geometryConstantBuffer, 0, nullptr, &geometryConstantBuffer, 0, 0);
-        g_deviceContext->VSSetConstantBuffers(0, 1, &g_geometryConstantBuffer);
+        SpherePropsConstantBuffer spropsConstantBuffer;
+        spropsConstantBuffer.roughness = (float)mipLevel / (mipLevels - 1);
+        g_deviceContext->UpdateSubresource(g_spropsConstantBuffer, 0, nullptr, &spropsConstantBuffer, 0, 0);
+        g_deviceContext->PSSetConstantBuffers(1, 1, &g_spropsConstantBuffer);
 
-        g_deviceContext->DrawIndexed(6, 0, 0);
-        g_deviceContext->CopySubresourceRegion(envTexture, (UINT)i, 0, 0, 0, rt.GetRenderTarget(), 0, nullptr);
+        for (int i = 0; i < numSides; i++) {
+            auto vertexBuffer = createBuffer(g_pd3dDevice, sizeof(SimpleVertex) * 4, D3D11_BIND_VERTEX_BUFFER, vertices[i]);
+            g_deviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
+            vertexBuffer->Release();
+
+            XMVECTOR position = { 0.0f, 0.0f, 0.0f };
+            XMVECTOR focus = XMVectorAdd(position, dirs[i]);
+            auto viewMatrix = XMMatrixLookAtLH(position, focus, ups[i]);
+
+            geometryConstantBuffer.view = XMMatrixTranspose(viewMatrix);
+            g_deviceContext->UpdateSubresource(g_geometryConstantBuffer, 0, nullptr, &geometryConstantBuffer, 0, 0);
+            g_deviceContext->VSSetConstantBuffers(0, 1, &g_geometryConstantBuffer);
+
+            g_deviceContext->DrawIndexed(6, 0, 0);
+            g_deviceContext->CopySubresourceRegion(envTexture, (UINT)(i * mipLevels + mipLevel), 0, 0, 0, rt.GetRenderTarget(), 0, nullptr);
+        }
     }
-
     ID3D11ShaderResourceView* nullsrv[] = { nullptr };
     g_deviceContext->PSSetShaderResources(0, 1, nullsrv);
 
-    CD3D11_SHADER_RESOURCE_VIEW_DESC environmentRVDesc(D3D11_SRV_DIMENSION_TEXTURECUBE, environmentDesc.Format, 0, 1);
+    CD3D11_SHADER_RESOURCE_VIEW_DESC environmentRVDesc(D3D11_SRV_DIMENSION_TEXTURECUBE, environmentDesc.Format, 0, environmentDesc.MipLevels);
     g_pd3dDevice->CreateShaderResourceView(envTexture, &environmentRVDesc, dstEnvironmentRV);
     envTexture->Release();
     rt.Clean();
@@ -691,7 +787,14 @@ HRESULT InitScene() {
     samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
     samplerDesc.MinLOD = 0;
     samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
-    hr = g_pd3dDevice->CreateSamplerState(&samplerDesc, &g_pSamplerLinear);
+    hr = g_pd3dDevice->CreateSamplerState(&samplerDesc, &g_pMinMagMipLinear);
+    if (FAILED(hr)) { return hr; }
+
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    hr = g_pd3dDevice->CreateSamplerState(&samplerDesc, &g_pMinMagMipLinearBorder);
     if (FAILED(hr)) { return hr; }
 
     RECT winRect;
@@ -720,7 +823,7 @@ HRESULT InitScene() {
     subresourceData.SysMemPitch = x * (4 * sizeof(float));
 
     ID3D11Texture2D* envTexture = nullptr;
-    
+
     hr = g_pd3dDevice->CreateTexture2D(&environmentDesc, &subresourceData, &envTexture);
     if (FAILED(hr)) { return hr; }
     stbi_image_free(stbiData);
@@ -728,14 +831,18 @@ HRESULT InitScene() {
     CD3D11_SHADER_RESOURCE_VIEW_DESC environmentRVDesc(D3D11_SRV_DIMENSION_TEXTURE2D, environmentDesc.Format);
     ID3D11ShaderResourceView* environmentRV = nullptr;
     hr = g_pd3dDevice->CreateShaderResourceView(envTexture, &environmentRVDesc, &environmentRV);
-    
+
     if (FAILED(hr)) { return hr; }
     envTexture->Release();
-    
-    CreateCubeMap(512, g_pCubeMapPixelShader, &environmentRV, &g_pTextureRV);
+
+    CreateCubeMap(512, 10, g_pCubeMapPixelShader, &environmentRV, &g_pTextureRV);
     environmentRV->Release();
 
-    CreateCubeMap(32, g_pIrradianceMapPixelShader, &g_pTextureRV, &g_pIrradiance);
+    CreateCubeMap(32, 1, g_pIrradianceMapPixelShader, &g_pTextureRV, &g_pIrradianceRV);
+
+    CreateCubeMap(128, 5, g_pPrefilteredColorPixelShader, &g_pTextureRV, &g_pEnvPrefilteredRV);
+
+    CreatePreintegratedBRDF(32);
 }
 
 //--------------------------------------------------------------------------------------
@@ -744,21 +851,23 @@ HRESULT InitScene() {
 
 void ReleaseShaders() {
 
-    if (g_pVertexShader)               g_pVertexShader->Release();
-    if (g_pPixelShader)                g_pPixelShader->Release();
-    if (g_pCopyPixelPostShader)        g_pCopyPixelPostShader->Release();
-    if (g_pBrightnessPixelPostShader)  g_pBrightnessPixelPostShader->Release();
-    if (g_pTonemapPixelPostShader)     g_pTonemapPixelPostShader->Release();
-    if (g_pPBRPixelShader)             g_pPBRPixelShader->Release();
-    if (g_pNormalDistPixelShader)      g_pNormalDistPixelShader->Release();
-    if (g_pGeometryPixelShader)        g_pGeometryPixelShader->Release();
-    if (g_pFresnelPixelShader)         g_pFresnelPixelShader->Release();
-    if (g_pVertexShaderCopy)           g_pVertexShaderCopy->Release();
-    if (g_pPixelShaderToneMapping)     g_pPixelShaderToneMapping->Release();
-    if (g_pEnvironmentVertexShader)    g_pEnvironmentVertexShader->Release();
-    if (g_pEnvironmentPixelShader)     g_pEnvironmentPixelShader->Release();
-    if (g_pCubeMapPixelShader)      g_pCubeMapPixelShader->Release();
-    if (g_pIrradianceMapPixelShader)g_pIrradianceMapPixelShader->Release();
+    if (g_pVertexShader)                   g_pVertexShader->Release();
+    if (g_pPixelShader)                    g_pPixelShader->Release();
+    if (g_pCopyPixelPostShader)            g_pCopyPixelPostShader->Release();
+    if (g_pBrightnessPixelPostShader)      g_pBrightnessPixelPostShader->Release();
+    if (g_pTonemapPixelPostShader)         g_pTonemapPixelPostShader->Release();
+    if (g_pPBRPixelShader)                 g_pPBRPixelShader->Release();
+    if (g_pNormalDistPixelShader)          g_pNormalDistPixelShader->Release();
+    if (g_pGeometryPixelShader)            g_pGeometryPixelShader->Release();
+    if (g_pFresnelPixelShader)             g_pFresnelPixelShader->Release();
+    if (g_pCopyVertexShader)               g_pCopyVertexShader->Release();
+    if (g_pToneMappingPixelShader)         g_pToneMappingPixelShader->Release();
+    if (g_pEnvironmentVertexShader)        g_pEnvironmentVertexShader->Release();
+    if (g_pEnvironmentPixelShader)         g_pEnvironmentPixelShader->Release();
+    if (g_pCubeMapPixelShader)             g_pCubeMapPixelShader->Release();
+    if (g_pIrradianceMapPixelShader)       g_pIrradianceMapPixelShader->Release();
+    if (g_pPrefilteredColorPixelShader)    g_pPrefilteredColorPixelShader->Release();
+    if (g_pPreintegratedBRDFPixelShader)   g_pPreintegratedBRDFPixelShader->Release();
 }
 
 void CleanupBuffers() {
@@ -785,9 +894,14 @@ void CleanupDevice()
 
     if (g_deviceContext) g_deviceContext->ClearState();
     if (g_pInputVertexLayout) g_pInputVertexLayout->Release();
-    if (g_pSamplerLinear) g_pSamplerLinear->Release();
+    if (g_pMinMagMipLinear) g_pMinMagMipLinear->Release();
+    if (g_pMinMagMipLinearBorder) g_pMinMagMipLinearBorder->Release();
+
     if (g_pTextureRV) g_pTextureRV->Release();
-    if (g_pIrradiance) g_pIrradiance->Release();
+    if (g_pIrradianceRV) g_pIrradianceRV->Release();
+    if (g_pEnvPrefilteredRV) g_pEnvPrefilteredRV->Release();
+    if (g_pEnvPreintegratedRV) g_pEnvPreintegratedRV->Release();
+
     if (g_pDepthStencil) g_pDepthStencil->Release();
     if (g_pDepthStencilView) g_pDepthStencilView->Release();
     if (g_pDepthStencilState) g_pDepthStencilState->Release();
@@ -952,8 +1066,8 @@ void Render() {
         sphereColor[i] = powf(sphereColorRGB[i], 2.2f);
     }
     sphereColorSRGB = XMFLOAT4(sphereColor);
-    SpherePropsConstantBuffer sprops_cbuffer = { sphereColorSRGB, roughness, metalness };
-    g_deviceContext->UpdateSubresource(g_spropsConstantBuffer, 0, nullptr, &sprops_cbuffer, 0, 0);
+    SpherePropsConstantBuffer spropsConstantBuffer = { sphereColorSRGB, roughness, metalness };
+    g_deviceContext->UpdateSubresource(g_spropsConstantBuffer, 0, nullptr, &spropsConstantBuffer, 0, 0);
 
     LightsConstantBuffer lightsConstBuffer;
     for (int i = 0; i < NUM_LIGHTS; i++) {
@@ -971,8 +1085,12 @@ void Render() {
     g_deviceContext->PSSetConstantBuffers(1, 1, &g_spropsConstantBuffer);
     g_deviceContext->PSSetConstantBuffers(2, 1, &g_lightConstantBuffer);
 
-    g_deviceContext->PSSetShaderResources(0, 1, &g_pIrradiance);
-    g_deviceContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
+    g_deviceContext->PSSetShaderResources(0, 1, &g_pIrradianceRV);
+    g_deviceContext->PSSetShaderResources(1, 1, &g_pEnvPrefilteredRV);
+    g_deviceContext->PSSetShaderResources(2, 1, &g_pEnvPreintegratedRV);
+
+    g_deviceContext->PSSetSamplers(0, 1, &g_pMinMagMipLinear);
+    g_deviceContext->PSSetSamplers(1, 1, &g_pMinMagMipLinearBorder);
 
     g_deviceContext->DrawIndexed(numIndices, 0, 0);
 
@@ -992,7 +1110,7 @@ void Render() {
     g_deviceContext->PSSetShader(g_pEnvironmentPixelShader, nullptr, 0);
 
     g_deviceContext->PSSetShaderResources(0, 1, &g_pTextureRV);
-    g_deviceContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
+    g_deviceContext->PSSetSamplers(0, 1, &g_pMinMagMipLinear);
 
     g_deviceContext->DrawIndexed(numIndicesEnv, 0, 0);
 
@@ -1007,12 +1125,12 @@ void Render() {
         g_deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         g_deviceContext->IASetInputLayout(nullptr);
 
-        g_deviceContext->VSSetShader(g_pVertexShaderCopy, nullptr, 0);
-        g_deviceContext->PSSetShader(g_pPixelShaderToneMapping, nullptr, 0);
+        g_deviceContext->VSSetShader(g_pCopyVertexShader, nullptr, 0);
+        g_deviceContext->PSSetShader(g_pToneMappingPixelShader, nullptr, 0);
 
         auto srv = g_pRenderTexture->GetShaderResourceView();
         g_deviceContext->PSSetShaderResources(0, 1, &srv);
-        g_deviceContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
+        g_deviceContext->PSSetSamplers(0, 1, &g_pMinMagMipLinear);
 
         g_deviceContext->Draw(4, 0);
 

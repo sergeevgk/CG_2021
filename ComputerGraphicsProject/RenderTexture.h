@@ -17,6 +17,5 @@ private:
     ID3D11Texture2D* pRenderTarget = nullptr;
     ID3D11RenderTargetView* pRenderTargetView = nullptr;
     ID3D11ShaderResourceView* pShaderResourceView = nullptr;
-
     DXGI_FORMAT format;
 };
