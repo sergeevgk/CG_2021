@@ -40,6 +40,11 @@ cbuffer Lights : register(b2)
     float lightIntensity[NUM_LIGHTS];
 };
 
+cbuffer ExposureBuf :register(b3) {
+    float exposureMult;
+};
+
+
 struct VsInput {
     float4 localPos : POS;
     float3 localNorm : NOR;
@@ -271,7 +276,7 @@ float3 TonemapFilmic(float3 color)
 {
     static const float W = 11.2;
 
-    float e = Exposure() * 15.0f;
+    float e = Exposure()*exposureMult;
     float3 curr = Uncharted2Tonemap(e * color);
     float3 whiteScale = 1.0f / Uncharted2Tonemap(W);
     return curr * whiteScale;

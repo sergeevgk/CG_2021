@@ -54,6 +54,11 @@ struct LightsConstantBuffer {
     XMFLOAT4 lightAttenuation[NUM_LIGHTS];
     float lightIntensity[3 * NUM_LIGHTS];
 };
+__declspec(align(16))
+struct ExposureConstantBuffer {
+    float exposureMult;
+
+};
 
 
 //--------------------------------------------------------------------------------------
@@ -80,6 +85,7 @@ ID3D11Buffer* g_environmentVertexBuffer = nullptr;
 ID3D11Buffer* g_lightConstantBuffer = nullptr;
 ID3D11Buffer* g_geometryConstantBuffer = nullptr;
 ID3D11Buffer* g_spropsConstantBuffer = nullptr;
+ID3D11Buffer* g_exposureConstantBuffer = nullptr;
 
 
 ID3D11ShaderResourceView* g_pTextureRV = nullptr;
@@ -146,6 +152,7 @@ XMFLOAT4 sphereColorSRGB;
 float roughness = 0.5f;
 float metalness = 0.5f;
 float intensity = 10.0f;
+float exposureMult = 1.0f;
 
 PointLight lights[NUM_LIGHTS];
 
@@ -776,7 +783,7 @@ HRESULT InitScene() {
     g_geometryConstantBuffer = createBuffer(g_pd3dDevice, sizeof(GeometryOperatorsConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
     g_spropsConstantBuffer = createBuffer(g_pd3dDevice, sizeof(SpherePropsConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
     g_lightConstantBuffer = createBuffer(g_pd3dDevice, sizeof(LightsConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
-
+    g_exposureConstantBuffer = createBuffer(g_pd3dDevice, sizeof(ExposureConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
 
     D3D11_SAMPLER_DESC samplerDesc;
     ZeroMemory(&samplerDesc, sizeof(samplerDesc));
@@ -814,7 +821,7 @@ HRESULT InitScene() {
     g_environmentIndexBuffer = createBuffer(g_pd3dDevice, sizeof(unsigned) * numIndicesEnv, D3D11_BIND_INDEX_BUFFER, envIndices.data());
 
     int x, y, comp;
-    float* stbiData = stbi_loadf("blaubeuren_night_4k.hdr", &x, &y, &comp, STBI_rgb_alpha);
+    float* stbiData = stbi_loadf("palermo_park_1k.hdr", &x, &y, &comp, STBI_rgb_alpha);
 
     CD3D11_TEXTURE2D_DESC environmentDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, x, y, 1, 1, D3D11_BIND_SHADER_RESOURCE);
 
@@ -878,6 +885,7 @@ void CleanupBuffers() {
     g_sphereIndexBuffer->Release();
     g_environmentVertexBuffer->Release();
     g_environmentIndexBuffer->Release();
+    g_exposureConstantBuffer->Release();
 }
 
 void QuitImgui() {
@@ -1068,8 +1076,10 @@ void Render() {
     sphereColorSRGB = XMFLOAT4(sphereColor);
     SpherePropsConstantBuffer spropsConstantBuffer = { sphereColorSRGB, roughness, metalness };
     g_deviceContext->UpdateSubresource(g_spropsConstantBuffer, 0, nullptr, &spropsConstantBuffer, 0, 0);
-
+    ExposureConstantBuffer exposureCB;
+    exposureCB.exposureMult = exposureMult;
     LightsConstantBuffer lightsConstBuffer;
+
     for (int i = 0; i < NUM_LIGHTS; i++) {
         lightsConstBuffer.lightPos[i] = lights[i].Pos;
         lightsConstBuffer.lightColor[i] = lights[i].Color;
@@ -1078,12 +1088,15 @@ void Render() {
         lightsConstBuffer.lightIntensity[0] = intensity;
     }
     g_deviceContext->UpdateSubresource(g_lightConstantBuffer, 0, nullptr, &lightsConstBuffer, 0, 0);
+    g_deviceContext->UpdateSubresource(g_exposureConstantBuffer, 0, nullptr, &exposureCB, 0, 0);
+
     g_deviceContext->VSSetShader(g_pVertexShader, nullptr, 0);
     g_deviceContext->VSSetConstantBuffers(0, 1, &g_geometryConstantBuffer);
     g_deviceContext->PSSetShader(ps, nullptr, 0);
     g_deviceContext->PSSetConstantBuffers(0, 1, &g_geometryConstantBuffer);
     g_deviceContext->PSSetConstantBuffers(1, 1, &g_spropsConstantBuffer);
     g_deviceContext->PSSetConstantBuffers(2, 1, &g_lightConstantBuffer);
+    g_deviceContext->PSSetConstantBuffers(3, 1, &g_exposureConstantBuffer);
 
     g_deviceContext->PSSetShaderResources(0, 1, &g_pIrradianceRV);
     g_deviceContext->PSSetShaderResources(1, 1, &g_pEnvPrefilteredRV);
@@ -1149,6 +1162,7 @@ void Render() {
     ImGui::SliderFloat("Roughness", &roughness, 0, 1);
     ImGui::SliderFloat("Metalness", &metalness, 0, 1);
     ImGui::SliderFloat("Light Intensity (PBR)", &intensity, 0, 3000);
+    ImGui::SliderFloat("Exposure", &exposureMult, 1, 50);
     ImGui::ColorEdit3("Metal F0", sphereColorRGB);
     ImGui::End();
 
