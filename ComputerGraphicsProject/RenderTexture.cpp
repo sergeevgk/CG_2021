@@ -18,6 +18,7 @@
 
 RenderTexture::RenderTexture(DXGI_FORMAT format) : format(format) {}
 
+
 HRESULT RenderTexture::CreateResources(ID3D11Device* device, UINT width, UINT height)
 {
     HRESULT hr = S_OK;

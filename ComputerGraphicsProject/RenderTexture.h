@@ -12,6 +12,7 @@ public:
     ID3D11RenderTargetView* GetRenderTargetView()  const noexcept { return pRenderTargetView; };
     ID3D11ShaderResourceView* GetShaderResourceView()  const noexcept { return pShaderResourceView; };
 
+
     void Clean();
 private:
     ID3D11Texture2D* pRenderTarget = nullptr;
@@ -19,4 +20,5 @@ private:
     ID3D11ShaderResourceView* pShaderResourceView = nullptr;
 
     DXGI_FORMAT format;
+
 };

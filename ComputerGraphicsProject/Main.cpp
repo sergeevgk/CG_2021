@@ -58,7 +58,9 @@ struct LightsConstantBuffer {
 __declspec(align(16))
 struct ExposureConstantBuffer {
     float exposureMult;
+
 };
+
 
 //--------------------------------------------------------------------------------------
 // Global Variables
@@ -71,6 +73,7 @@ ID3D11Device* g_pd3dDevice = nullptr;
 ID3D11DeviceContext* g_deviceContext = nullptr;
 IDXGISwapChain* g_pSwapChain = nullptr;
 ID3D11RenderTargetView* g_renderTargetView = nullptr;
+
 ID3D11Texture2D* g_pDepthStencil = nullptr;
 ID3D11DepthStencilView* g_pDepthStencilView = nullptr;
 ID3D11InputLayout* g_pInputVertexLayout = nullptr;
@@ -85,6 +88,7 @@ ID3D11Buffer* g_lightConstantBuffer = nullptr;
 ID3D11Buffer* g_geometryConstantBuffer = nullptr;
 ID3D11Buffer* g_spropsConstantBuffer = nullptr;
 ID3D11Buffer* g_exposureConstantBuffer = nullptr;
+
 
 
 ID3D11ShaderResourceView* g_pTextureRV = nullptr;
@@ -295,6 +299,7 @@ HRESULT CreateVS(WCHAR* fileName, string shaderName, ID3D11VertexShader** vertex
         return hr;
     }
 
+
     // Create the pixel shader
     hr = g_pd3dDevice->CreateVertexShader(pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), nullptr, vertexShader);
     if (FAILED(hr)) {
@@ -365,6 +370,7 @@ HRESULT InitShaders() {
         return hr;
     }
 }
+
 
 HRESULT Init() {
     HRESULT hr;
@@ -462,6 +468,7 @@ HRESULT Init() {
     }
 
     hr = g_pd3dDevice->CreateRenderTargetView(p_framebuffer, 0, &g_renderTargetView);
+
     if (FAILED(hr)) {
         return hr;
     }
@@ -659,11 +666,13 @@ HRESULT CreateCubeMap(UINT size, ID3D11PixelShader* pixelShader, ID3D11ShaderRes
     g_pd3dDevice->CreateShaderResourceView(envTexture, &environmentRVDesc, dstEnvironmentRV);
     envTexture->Release();
     rt.Clean();
+
 }
 
 HRESULT InitScene() {
     HRESULT hr;
     g_Camera = Camera();
+
 
     g_Borders.Min = { -100.0f, -10.0f, -100.0f };
     g_Borders.Max = { 100.0f, 10.0f, 100.0f };
@@ -678,6 +687,7 @@ HRESULT InitScene() {
 
     g_Camera = Camera();
 
+
     lights[0].Pos = { 0.0f, 4.0f, -3.0f, 0.0f };
     lights[0].Color = (XMFLOAT4)Colors::White;
 
@@ -687,6 +697,7 @@ HRESULT InitScene() {
     g_spropsConstantBuffer = createBuffer(g_pd3dDevice, sizeof(SpherePropsConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
     g_lightConstantBuffer = createBuffer(g_pd3dDevice, sizeof(LightsConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
     g_exposureConstantBuffer = createBuffer(g_pd3dDevice, sizeof(ExposureConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
+
 
 
     D3D11_SAMPLER_DESC samplerDesc;
@@ -743,6 +754,7 @@ HRESULT InitScene() {
     environmentRV->Release();
 
     CreateCubeMap(32, g_pIrradianceMapPixelShader, &g_pTextureRV, &g_pIrradiance);
+
 }
 
 //--------------------------------------------------------------------------------------
@@ -766,6 +778,7 @@ void ReleaseShaders() {
     if (g_pEnvironmentPixelShader)     g_pEnvironmentPixelShader->Release();
     if (g_pCubeMapPixelShader)      g_pCubeMapPixelShader->Release();
     if (g_pIrradianceMapPixelShader)g_pIrradianceMapPixelShader->Release();
+
 }
 
 void CleanupBuffers() {
@@ -777,6 +790,7 @@ void CleanupBuffers() {
     g_environmentVertexBuffer->Release();
     g_environmentIndexBuffer->Release();
     g_exposureConstantBuffer->Release();
+
 }
 
 void QuitImgui() {
@@ -800,6 +814,7 @@ void CleanupDevice()
     if (g_pDepthStencilView) g_pDepthStencilView->Release();
     if (g_pDepthStencilState) g_pDepthStencilState->Release();
     if (g_renderTargetView) g_renderTargetView->Release();
+
     if (g_pSwapChain) g_pSwapChain->Release();
     if (g_deviceContext) g_deviceContext->Release();
     if (g_pd3dDevice) g_pd3dDevice->Release();
@@ -864,6 +879,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         case VK_DOWN:
             g_Camera.MoveNormal(-moveUnit);
             g_Camera.PositionClip(g_Borders);
+
             break;
         }
         break;
@@ -888,6 +904,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             int dy = currentPos.y - cursor.y;
             g_Camera.RotateHorisontal(dx * mouseSence);
             g_Camera.RotateVertical(dy * mouseSence);
+
             SetCursorPos(cursor.x, cursor.y);
         }
 
@@ -908,6 +925,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 void Render() {
     auto rtv = renderMode == RenderMode::PBR ? g_pRenderTexture->GetRenderTargetView() : g_renderTargetView;
+
 
     ID3D11PixelShader* ps = nullptr;
 
@@ -946,6 +964,7 @@ void Render() {
     XMFLOAT4 cameraPosition;
     XMStoreFloat4(&cameraPosition, g_Camera.Pos);
 
+
     GeometryOperatorsConstantBuffer geometryCB;
     geometryCB.world = XMMatrixTranspose(g_World);
     geometryCB.worldNormals = XMMatrixInverse(nullptr, g_World);
@@ -965,6 +984,7 @@ void Render() {
     ExposureConstantBuffer exposureCB;
     exposureCB.exposureMult = exposureMult;
     LightsConstantBuffer lightsConstBuffer;
+
     for (int i = 0; i < NUM_LIGHTS; i++) {
         lightsConstBuffer.lightPos[i] = lights[i].Pos;
         lightsConstBuffer.lightColor[i] = lights[i].Color;
@@ -975,6 +995,7 @@ void Render() {
     
     g_deviceContext->UpdateSubresource(g_lightConstantBuffer, 0, nullptr, &lightsConstBuffer, 0, 0);
     g_deviceContext->UpdateSubresource(g_exposureConstantBuffer, 0, nullptr, &exposureCB, 0, 0);
+
     g_deviceContext->VSSetShader(g_pVertexShader, nullptr, 0);
     g_deviceContext->VSSetConstantBuffers(0, 1, &g_geometryConstantBuffer);
     g_deviceContext->PSSetShader(ps, nullptr, 0);
@@ -1031,7 +1052,6 @@ void Render() {
         ID3D11ShaderResourceView* nullsrv[] = { nullptr };
         g_deviceContext->PSSetShaderResources(0, 1, nullsrv);
     }
-
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
