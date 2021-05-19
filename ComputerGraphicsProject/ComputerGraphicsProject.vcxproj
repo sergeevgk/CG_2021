@@ -391,6 +391,7 @@
     <CLInclude Include="resource.h" />
     <ClInclude Include="SimpleVertex.h" />
     <ClInclude Include="Sphere.h" />
+    <ClInclude Include="STBImage\stb_image.h" />
     <ResourceCompile Include="resource.rc" />
   </ItemGroup>
   <ItemGroup>

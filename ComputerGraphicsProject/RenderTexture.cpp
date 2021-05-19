@@ -16,10 +16,8 @@
 
 #include "RenderTexture.h"
 
-RenderTexture::RenderTexture(DXGI_FORMAT format) :
-    format(format)
-    //vp()
-{};
+RenderTexture::RenderTexture(DXGI_FORMAT format) : format(format) {}
+
 
 HRESULT RenderTexture::CreateResources(ID3D11Device* device, UINT width, UINT height)
 {
@@ -51,12 +49,6 @@ HRESULT RenderTexture::CreateResources(ID3D11Device* device, UINT width, UINT he
 
     hr = device->CreateShaderResourceView(pRenderTarget, &srvd, &pShaderResourceView);
 
-  /*  vp.Width = (FLOAT)(width);
-    vp.Height = (FLOAT)(height);
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    vp.TopLeftX = 0;
-    vp.TopLeftY = 0;*/
 
     return hr;
 }
@@ -69,5 +61,5 @@ void RenderTexture::Clean() {
 
 RenderTexture::~RenderTexture()
 {
-    
+
 }

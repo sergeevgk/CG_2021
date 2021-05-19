@@ -19,6 +19,9 @@
 #include "ImGui/imgui_impl_dx11.h"
 #include "ImGui/imgui_impl_win32.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "STBImage/stb_image.h"
+
 #define NUM_LIGHTS 1
 #define NUM_RENDER_MODES 4
 
@@ -46,11 +49,16 @@ struct SpherePropsConstantBuffer {
 
 __declspec(align(16))
 struct LightsConstantBuffer {
-    XMFLOAT4 ambientLight;
     XMFLOAT4 lightPos[NUM_LIGHTS];
     XMFLOAT4 lightColor[NUM_LIGHTS];
     XMFLOAT4 lightAttenuation[NUM_LIGHTS];
     float lightIntensity[3 * NUM_LIGHTS];
+};
+
+__declspec(align(16))
+struct ExposureConstantBuffer {
+    float exposureMult;
+
 };
 
 
@@ -64,7 +72,8 @@ D3D_FEATURE_LEVEL                   g_featureLevel = D3D_FEATURE_LEVEL_11_0;
 ID3D11Device* g_pd3dDevice = nullptr;
 ID3D11DeviceContext* g_deviceContext = nullptr;
 IDXGISwapChain* g_pSwapChain = nullptr;
-ID3D11RenderTargetView* renderTargetView = nullptr;
+ID3D11RenderTargetView* g_renderTargetView = nullptr;
+
 ID3D11Texture2D* g_pDepthStencil = nullptr;
 ID3D11DepthStencilView* g_pDepthStencilView = nullptr;
 ID3D11InputLayout* g_pInputVertexLayout = nullptr;
@@ -78,9 +87,12 @@ ID3D11Buffer* g_environmentVertexBuffer = nullptr;
 ID3D11Buffer* g_lightConstantBuffer = nullptr;
 ID3D11Buffer* g_geometryConstantBuffer = nullptr;
 ID3D11Buffer* g_spropsConstantBuffer = nullptr;
+ID3D11Buffer* g_exposureConstantBuffer = nullptr;
+
 
 
 ID3D11ShaderResourceView* g_pTextureRV = nullptr;
+ID3D11ShaderResourceView* g_pIrradiance = nullptr;
 ID3D11SamplerState* g_pSamplerLinear = nullptr;
 
 XMMATRIX  g_sphereWorld;
@@ -90,13 +102,12 @@ XMMATRIX  g_Projection;
 XMVECTOR  g_Eye;
 XMVECTOR  g_At;
 XMVECTOR  g_Up;
-Camera    camera;
+Camera    g_Camera;
 WorldBorders  g_Borders;
 
 
 ID3D11VertexShader* g_pVertexShader = nullptr;
 ID3D11PixelShader* g_pPixelShader = nullptr;
-ID3D11VertexShader* g_pVertexPostShader = nullptr;
 ID3D11PixelShader* g_pCopyPixelPostShader = nullptr;
 ID3D11PixelShader* g_pBrightnessPixelPostShader = nullptr;
 ID3D11PixelShader* g_pTonemapPixelPostShader = nullptr;
@@ -113,6 +124,9 @@ ID3D11PixelShader* g_pPixelShaderToneMapping = nullptr;
 
 ID3D11VertexShader* g_pEnvironmentVertexShader = nullptr;
 ID3D11PixelShader* g_pEnvironmentPixelShader = nullptr;
+
+ID3D11PixelShader* g_pCubeMapPixelShader = nullptr;
+ID3D11PixelShader* g_pIrradianceMapPixelShader = nullptr;
 
 
 D3D11_VIEWPORT vp;
@@ -131,10 +145,11 @@ UINT numIndicesEnv;
 
 float sphereColorRGB[4] = { 0.2f, 0.0f, 0.0f, 1.0f };;
 XMFLOAT4 sphereColorSRGB;
-XMFLOAT4 ambientLight;
+
 float roughness = 0.5f;
 float metalness = 0.5f;
 float intensity = 10.0f;
+float exposureMult = 1.0f;
 
 PointLight lights[NUM_LIGHTS];
 
@@ -284,6 +299,7 @@ HRESULT CreateVS(WCHAR* fileName, string shaderName, ID3D11VertexShader** vertex
         return hr;
     }
 
+
     // Create the pixel shader
     hr = g_pd3dDevice->CreateVertexShader(pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), nullptr, vertexShader);
     if (FAILED(hr)) {
@@ -343,7 +359,18 @@ HRESULT InitShaders() {
     if (FAILED(hr)) {
         return hr;
     }
+
+    hr = CreatePS(shaderFileName, "psCubeMap", &g_pCubeMapPixelShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    hr = CreatePS(shaderFileName, "psIrradianceMap", &g_pIrradianceMapPixelShader);
+    if (FAILED(hr)) {
+        return hr;
+    }
 }
+
 
 HRESULT Init() {
     HRESULT hr;
@@ -440,7 +467,8 @@ HRESULT Init() {
         return hr;
     }
 
-    hr = g_pd3dDevice->CreateRenderTargetView(p_framebuffer, 0, &renderTargetView);
+    hr = g_pd3dDevice->CreateRenderTargetView(p_framebuffer, 0, &g_renderTargetView);
+
     if (FAILED(hr)) {
         return hr;
     }
@@ -524,7 +552,7 @@ HRESULT Resize(int width, int height) {
     HRESULT hr;
     g_deviceContext->OMSetRenderTargets(0, 0, 0);
 
-    renderTargetView->Release();
+    g_renderTargetView->Release();
 
     g_deviceContext->Flush();
 
@@ -538,19 +566,113 @@ HRESULT Resize(int width, int height) {
     if (FAILED(hr)) { return hr; }
 
 
-    hr = g_pd3dDevice->CreateRenderTargetView(p_buffer, nullptr, &renderTargetView);
+    hr = g_pd3dDevice->CreateRenderTargetView(p_buffer, nullptr, &g_renderTargetView);
     if (FAILED(hr)) { return hr; }
 
     p_buffer->Release();
 
-    g_deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
+    g_deviceContext->OMSetRenderTargets(1, &g_renderTargetView, nullptr);
 
     ResizeResources(width, height);
 }
 
+HRESULT CreateCubeMap(UINT size, ID3D11PixelShader* pixelShader, ID3D11ShaderResourceView** srcEnvironmentRV, ID3D11ShaderResourceView** dstEnvironmentRV) {
+    const int numSides = 6;
+    CD3D11_TEXTURE2D_DESC environmentDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, size, size, numSides, 1, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0, 1, 0, D3D11_RESOURCE_MISC_TEXTURECUBE);
+    
+    ID3D11Texture2D* envTexture = nullptr;
+    HRESULT hr = g_pd3dDevice->CreateTexture2D(&environmentDesc, nullptr, &envTexture);
+    if (FAILED(hr)) { return hr; }
+
+    RenderTexture rt(DXGI_FORMAT_R32G32B32A32_FLOAT);
+    rt.CreateResources(g_pd3dDevice, size, size);
+
+    auto rtv = rt.GetRenderTargetView();
+    g_deviceContext->OMSetRenderTargets(1, &rtv, nullptr);
+
+    D3D11_VIEWPORT vp = { 0.0f, 0.0f, (FLOAT)size, (FLOAT)size, 0.0f, 1.0f };
+    g_deviceContext->RSSetViewports(1, &vp);
+
+    g_deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    g_deviceContext->IASetInputLayout(g_pInputVertexLayout);
+
+    SimpleVertex verts[numSides][4] = {
+        { { { 1.0f, -1.0f, 1.0f } }, { { 1.0f, 1.0f, 1.0f } }, { { 1.0f, 1.0f, -1.0f } }, { { 1.0f, -1.0f, -1.0f } } },
+        { { { -1.0f, -1.0f, -1.0f } }, { { -1.0f, 1.0f, -1.0f } }, { { -1.0f, 1.0f, 1.0f } }, { { -1.0f, -1.0f, 1.0f } } },
+        { { { -1.0f, 1.0f, 1.0f } }, { { -1.0f, 1.0f, -1.0f } }, { { 1.0f, 1.0f, -1.0f } }, { { 1.0f, 1.0f, 1.0f } } },
+        { { { -1.0f, -1.0f, -1.0f } }, { { -1.0f, -1.0f, 1.0f } }, { { 1.0f, -1.0f, 1.0f } }, { { 1.0f, -1.0f, -1.0f } } },
+        { { { -1.0f, -1.0f, 1.0f } }, { { -1.0f, 1.0f, 1.0f } }, { { 1.0f, 1.0f, 1.0f } }, { { 1.0f, -1.0f, 1.0f } } },
+        { { { 1.0f, -1.0f, -1.0f } }, { { 1.0f, 1.0f, -1.0f } }, { { -1.0f, 1.0f, -1.0f } }, { { -1.0f, -1.0f, -1.0f } } }
+    };
+
+    int indices[numSides] = {
+        0, 1, 2,
+        2, 3, 0
+    };
+
+    auto indexBuffer = createBuffer(g_pd3dDevice, sizeof(int) * numSides, D3D11_BIND_INDEX_BUFFER, indices);
+    g_deviceContext->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R32_UINT, 0);
+    indexBuffer->Release();
+
+    XMVECTOR dirs[numSides] = {
+        { 1, 0, 0 },
+        { -1, 0, 0 },
+        { 0, 1, 0 },
+        { 0, -1, 0 },
+        { 0, 0, 1 },
+        { 0, 0, -1 }
+    };
+
+    XMVECTOR ups[numSides] = {
+        { 0, 1, 0 },
+        { 0, 1, 0 },
+        { 0, 0, -1 },
+        { 0, 0, 1 },
+        { 0, 1, 0 },
+        { 0, 1, 0 }
+    };
+
+    g_deviceContext->VSSetShader(g_pVertexShader, nullptr, 0);
+    g_deviceContext->PSSetShader(pixelShader, nullptr, 0);
+
+    g_deviceContext->PSSetShaderResources(0, 1, srcEnvironmentRV);
+    g_deviceContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
+
+    GeometryOperatorsConstantBuffer geometryConstantBuffer;
+    geometryConstantBuffer.world = XMMatrixTranspose(XMMatrixIdentity());
+    geometryConstantBuffer.projection = XMMatrixTranspose(XMMatrixPerspectiveFovLH(XM_PIDIV2, 1.0f, 0.01f, 1.0f));
+
+    for (size_t i = 0; i < numSides; i++) {
+        auto vertexBuffer = createBuffer(g_pd3dDevice, sizeof(SimpleVertex) * 4, D3D11_BIND_VERTEX_BUFFER, verts[i]);
+        g_deviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
+        vertexBuffer->Release();
+
+        XMVECTOR position = { 0.0f, 0.0f, 0.0f };
+        XMVECTOR focus = XMVectorAdd(position, dirs[i]);
+        auto viewMatrix = XMMatrixLookAtLH(position, focus, ups[i]);
+
+        geometryConstantBuffer.view = XMMatrixTranspose(viewMatrix);
+        g_deviceContext->UpdateSubresource(g_geometryConstantBuffer, 0, nullptr, &geometryConstantBuffer, 0, 0);
+        g_deviceContext->VSSetConstantBuffers(0, 1, &g_geometryConstantBuffer);
+
+        g_deviceContext->DrawIndexed(6, 0, 0);
+        g_deviceContext->CopySubresourceRegion(envTexture, (UINT)i, 0, 0, 0, rt.GetRenderTarget(), 0, nullptr);
+    }
+
+    ID3D11ShaderResourceView* nullsrv[] = { nullptr };
+    g_deviceContext->PSSetShaderResources(0, 1, nullsrv);
+
+    CD3D11_SHADER_RESOURCE_VIEW_DESC environmentRVDesc(D3D11_SRV_DIMENSION_TEXTURECUBE, environmentDesc.Format, 0, 1);
+    g_pd3dDevice->CreateShaderResourceView(envTexture, &environmentRVDesc, dstEnvironmentRV);
+    envTexture->Release();
+    rt.Clean();
+
+}
+
 HRESULT InitScene() {
     HRESULT hr;
-    camera = Camera();
+    g_Camera = Camera();
+
 
     g_Borders.Min = { -100.0f, -10.0f, -100.0f };
     g_Borders.Max = { 100.0f, 10.0f, 100.0f };
@@ -563,9 +685,8 @@ HRESULT InitScene() {
     vertexStride = sizeof(SimpleVertex);
     vertexOffset = 0;
 
-    camera = Camera();
+    g_Camera = Camera();
 
-    ambientLight = (XMFLOAT4)Colors::Black;
 
     lights[0].Pos = { 0.0f, 4.0f, -3.0f, 0.0f };
     lights[0].Color = (XMFLOAT4)Colors::White;
@@ -575,6 +696,8 @@ HRESULT InitScene() {
     g_geometryConstantBuffer = createBuffer(g_pd3dDevice, sizeof(GeometryOperatorsConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
     g_spropsConstantBuffer = createBuffer(g_pd3dDevice, sizeof(SpherePropsConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
     g_lightConstantBuffer = createBuffer(g_pd3dDevice, sizeof(LightsConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
+    g_exposureConstantBuffer = createBuffer(g_pd3dDevice, sizeof(ExposureConstantBuffer), D3D11_BIND_CONSTANT_BUFFER, nullptr);
+
 
 
     D3D11_SAMPLER_DESC samplerDesc;
@@ -605,10 +728,33 @@ HRESULT InitScene() {
     numIndicesEnv = (UINT)envIndices.size();
     g_environmentIndexBuffer = createBuffer(g_pd3dDevice, sizeof(unsigned) * numIndicesEnv, D3D11_BIND_INDEX_BUFFER, envIndices.data());
 
+    int x, y, comp;
+    float* stbiData = stbi_loadf("palermo_park_1k.hdr", &x, &y, &comp, STBI_rgb_alpha);
+
+    CD3D11_TEXTURE2D_DESC environmentDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, x, y, 1, 1, D3D11_BIND_SHADER_RESOURCE);
+
+    D3D11_SUBRESOURCE_DATA subresourceData;
+    subresourceData.pSysMem = stbiData;
+    subresourceData.SysMemPitch = x * (4 * sizeof(float));
+
     ID3D11Texture2D* envTexture = nullptr;
-    hr = CreateDDSTextureFromFileEx(g_pd3dDevice, L"earth-cubemap.dds", 0, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, D3D11_RESOURCE_MISC_TEXTURECUBE, true, (ID3D11Resource**)(&envTexture), &g_pTextureRV);
+    
+    hr = g_pd3dDevice->CreateTexture2D(&environmentDesc, &subresourceData, &envTexture);
+    if (FAILED(hr)) { return hr; }
+    stbi_image_free(stbiData);
+
+    CD3D11_SHADER_RESOURCE_VIEW_DESC environmentRVDesc(D3D11_SRV_DIMENSION_TEXTURE2D, environmentDesc.Format);
+    ID3D11ShaderResourceView* environmentRV = nullptr;
+    hr = g_pd3dDevice->CreateShaderResourceView(envTexture, &environmentRVDesc, &environmentRV);
+    
     if (FAILED(hr)) { return hr; }
     envTexture->Release();
+    
+    CreateCubeMap(512, g_pCubeMapPixelShader, &environmentRV, &g_pTextureRV);
+    environmentRV->Release();
+
+    CreateCubeMap(32, g_pIrradianceMapPixelShader, &g_pTextureRV, &g_pIrradiance);
+
 }
 
 //--------------------------------------------------------------------------------------
@@ -619,7 +765,6 @@ void ReleaseShaders() {
 
     if (g_pVertexShader)               g_pVertexShader->Release();
     if (g_pPixelShader)                g_pPixelShader->Release();
-    if (g_pVertexPostShader)           g_pVertexPostShader->Release();
     if (g_pCopyPixelPostShader)        g_pCopyPixelPostShader->Release();
     if (g_pBrightnessPixelPostShader)  g_pBrightnessPixelPostShader->Release();
     if (g_pTonemapPixelPostShader)     g_pTonemapPixelPostShader->Release();
@@ -631,6 +776,9 @@ void ReleaseShaders() {
     if (g_pPixelShaderToneMapping)     g_pPixelShaderToneMapping->Release();
     if (g_pEnvironmentVertexShader)    g_pEnvironmentVertexShader->Release();
     if (g_pEnvironmentPixelShader)     g_pEnvironmentPixelShader->Release();
+    if (g_pCubeMapPixelShader)      g_pCubeMapPixelShader->Release();
+    if (g_pIrradianceMapPixelShader)g_pIrradianceMapPixelShader->Release();
+
 }
 
 void CleanupBuffers() {
@@ -641,6 +789,8 @@ void CleanupBuffers() {
     g_sphereIndexBuffer->Release();
     g_environmentVertexBuffer->Release();
     g_environmentIndexBuffer->Release();
+    g_exposureConstantBuffer->Release();
+
 }
 
 void QuitImgui() {
@@ -659,10 +809,12 @@ void CleanupDevice()
     if (g_pInputVertexLayout) g_pInputVertexLayout->Release();
     if (g_pSamplerLinear) g_pSamplerLinear->Release();
     if (g_pTextureRV) g_pTextureRV->Release();
+    if (g_pIrradiance) g_pIrradiance->Release();
     if (g_pDepthStencil) g_pDepthStencil->Release();
     if (g_pDepthStencilView) g_pDepthStencilView->Release();
     if (g_pDepthStencilState) g_pDepthStencilState->Release();
-    if (renderTargetView) renderTargetView->Release();
+    if (g_renderTargetView) g_renderTargetView->Release();
+
     if (g_pSwapChain) g_pSwapChain->Release();
     if (g_deviceContext) g_deviceContext->Release();
     if (g_pd3dDevice) g_pd3dDevice->Release();
@@ -713,20 +865,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         switch (wParam)
         {
         case VK_LEFT:
-            camera.MoveTangent(-moveUnit);
-            camera.PositionClip(g_Borders);
+            g_Camera.MoveTangent(-moveUnit);
+            g_Camera.PositionClip(g_Borders);
             break;
         case VK_RIGHT:
-            camera.MoveTangent(moveUnit);
-            camera.PositionClip(g_Borders);
+            g_Camera.MoveTangent(moveUnit);
+            g_Camera.PositionClip(g_Borders);
             break;
         case VK_UP:
-            camera.MoveNormal(moveUnit);
-            camera.PositionClip(g_Borders);
+            g_Camera.MoveNormal(moveUnit);
+            g_Camera.PositionClip(g_Borders);
             break;
         case VK_DOWN:
-            camera.MoveNormal(-moveUnit);
-            camera.PositionClip(g_Borders);
+            g_Camera.MoveNormal(-moveUnit);
+            g_Camera.PositionClip(g_Borders);
+
             break;
         }
         break;
@@ -749,8 +902,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             GetCursorPos(&currentPos);
             int dx = currentPos.x - cursor.x;
             int dy = currentPos.y - cursor.y;
-            camera.RotateHorisontal(dx * mouseSence);
-            camera.RotateVertical(dy * mouseSence);
+            g_Camera.RotateHorisontal(dx * mouseSence);
+            g_Camera.RotateVertical(dy * mouseSence);
+
             SetCursorPos(cursor.x, cursor.y);
         }
 
@@ -770,7 +924,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 
 void Render() {
-    auto rtv = renderMode == RenderMode::PBR ? g_pRenderTexture->GetRenderTargetView() : renderTargetView;
+    auto rtv = renderMode == RenderMode::PBR ? g_pRenderTexture->GetRenderTargetView() : g_renderTargetView;
+
 
     ID3D11PixelShader* ps = nullptr;
 
@@ -805,9 +960,10 @@ void Render() {
     g_deviceContext->IASetVertexBuffers(0, 1, &g_sphereVertexBuffer, &stride, &offset);
     g_deviceContext->IASetIndexBuffer(g_sphereIndexBuffer, DXGI_FORMAT_R32_UINT, 0);
 
-    g_View = camera.GetViewMatrix();
+    g_View = g_Camera.GetViewMatrix();
     XMFLOAT4 cameraPosition;
-    XMStoreFloat4(&cameraPosition, camera.Pos);
+    XMStoreFloat4(&cameraPosition, g_Camera.Pos);
+
 
     GeometryOperatorsConstantBuffer geometryCB;
     geometryCB.world = XMMatrixTranspose(g_World);
@@ -825,9 +981,10 @@ void Render() {
     sphereColorSRGB = XMFLOAT4(sphereColor);
     SpherePropsConstantBuffer sprops_cbuffer = { sphereColorSRGB, roughness, metalness };
     g_deviceContext->UpdateSubresource(g_spropsConstantBuffer, 0, nullptr, &sprops_cbuffer, 0, 0);
-
+    ExposureConstantBuffer exposureCB;
+    exposureCB.exposureMult = exposureMult;
     LightsConstantBuffer lightsConstBuffer;
-    lightsConstBuffer.ambientLight = ambientLight;
+
     for (int i = 0; i < NUM_LIGHTS; i++) {
         lightsConstBuffer.lightPos[i] = lights[i].Pos;
         lightsConstBuffer.lightColor[i] = lights[i].Color;
@@ -835,13 +992,20 @@ void Render() {
         lightsConstBuffer.lightAttenuation[i] = att;
         lightsConstBuffer.lightIntensity[0] = intensity;
     }
+    
     g_deviceContext->UpdateSubresource(g_lightConstantBuffer, 0, nullptr, &lightsConstBuffer, 0, 0);
+    g_deviceContext->UpdateSubresource(g_exposureConstantBuffer, 0, nullptr, &exposureCB, 0, 0);
+
     g_deviceContext->VSSetShader(g_pVertexShader, nullptr, 0);
     g_deviceContext->VSSetConstantBuffers(0, 1, &g_geometryConstantBuffer);
     g_deviceContext->PSSetShader(ps, nullptr, 0);
     g_deviceContext->PSSetConstantBuffers(0, 1, &g_geometryConstantBuffer);
     g_deviceContext->PSSetConstantBuffers(1, 1, &g_spropsConstantBuffer);
     g_deviceContext->PSSetConstantBuffers(2, 1, &g_lightConstantBuffer);
+    g_deviceContext->PSSetConstantBuffers(3, 1, &g_exposureConstantBuffer);
+
+    g_deviceContext->PSSetShaderResources(0, 1, &g_pIrradiance);
+    g_deviceContext->PSSetSamplers(0, 1, &g_pSamplerLinear);
 
     g_deviceContext->DrawIndexed(numIndices, 0, 0);
 
@@ -867,11 +1031,11 @@ void Render() {
 
     if (renderMode == RenderMode::PBR) {
 
-        g_deviceContext->ClearRenderTargetView(renderTargetView, Colors::Black.f);
+        g_deviceContext->ClearRenderTargetView(g_renderTargetView, Colors::Black.f);
 
         g_deviceContext->RSSetViewports(1, &vp);
 
-        g_deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
+        g_deviceContext->OMSetRenderTargets(1, &g_renderTargetView, nullptr);
 
         g_deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         g_deviceContext->IASetInputLayout(nullptr);
@@ -889,7 +1053,6 @@ void Render() {
         g_deviceContext->PSSetShaderResources(0, 1, nullsrv);
     }
 
-
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -900,6 +1063,7 @@ void Render() {
     ImGui::SliderFloat("Roughness", &roughness, 0, 1);
     ImGui::SliderFloat("Metalness", &metalness, 0, 1);
     ImGui::SliderFloat("Light Intensity (PBR)", &intensity, 0, 3000);
+    ImGui::SliderFloat("Exposure", &exposureMult, 1, 50);
     ImGui::ColorEdit3("Metal F0", sphereColorRGB);
     ImGui::End();
 

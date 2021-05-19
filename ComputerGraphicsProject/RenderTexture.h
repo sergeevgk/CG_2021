@@ -12,13 +12,13 @@ public:
     ID3D11RenderTargetView* GetRenderTargetView()  const noexcept { return pRenderTargetView; };
     ID3D11ShaderResourceView* GetShaderResourceView()  const noexcept { return pShaderResourceView; };
 
-    //D3D11_VIEWPORT GetViewPort() { return vp; };
+
     void Clean();
 private:
-    ID3D11Texture2D* pRenderTarget;
-    ID3D11RenderTargetView* pRenderTargetView;
-    ID3D11ShaderResourceView* pShaderResourceView;
+    ID3D11Texture2D* pRenderTarget = nullptr;
+    ID3D11RenderTargetView* pRenderTargetView = nullptr;
+    ID3D11ShaderResourceView* pShaderResourceView = nullptr;
 
     DXGI_FORMAT format;
-    //D3D11_VIEWPORT vp;
+
 };

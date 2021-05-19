@@ -2,6 +2,9 @@
 #define EPS 1e-3f
 #define NUM_LIGHTS 1
 
+#define N1 1000
+#define N2 250
+
 Texture2D txDiffuse : register(t0);
 
 TextureCube environment : register(t0);
@@ -20,17 +23,20 @@ cbuffer GeometryOperators : register(b0)
 cbuffer SphereProps : register(b1)
 {
     float4 colorBase;
-    float roughness; 
+    float roughness;
     float metalness;
 };
 
 cbuffer Lights : register(b2)
 {
-    float4 ambientLight;
     float4 lightPos[NUM_LIGHTS];
     float4 lightColor[NUM_LIGHTS];
     float4 lightAtten[NUM_LIGHTS];
     float lightIntensity[NUM_LIGHTS];
+};
+
+cbuffer ExposureBuf :register(b3) {
+    float exposureMult;
 };
 
 struct VsInput {
@@ -63,6 +69,25 @@ VsOutput vsMain(VsInput input) {
     output.projectedPos = mul(output.projectedPos, projection);
 
     return output;
+}
+
+float3 FresnelSchlickRoughnessFunction(float3 v, float3 n) {
+    const float3 F0_noncond = 0.04f;
+    const float3 F0 = (1.0f - metalness) * F0_noncond + metalness * colorBase.rgb;
+    const float dotMult = saturate(dot(v, n));
+    float3 F = F0 + (max(1.0f - roughness, F0) - F0) * pow(1.0f - dotMult, 5);
+    return F;
+}
+
+float3 ambient(float3 v, float3 n)
+{
+    float3 F = FresnelSchlickRoughnessFunction(v, n);
+    float3 kS = F;
+    float3 kD = float3(1.0f, 1.0f, 1.0f) - kS;
+    kD *= 1.0 - metalness;
+    float3 irradiance = environment.Sample(sampleLinear, n).rgb;
+    float3 diffuse = irradiance * colorBase.xyz;
+    return kD * diffuse;
 }
 
 float3 projectedRadiance(int index, float3 pos, float3 normal)
@@ -117,7 +142,7 @@ float3 brdf(float3 normal, float3 lightDir, float3 cameraDir)
 
 
 float4 psLambert(VsOutput input) : SV_TARGET{
-    float3 color = colorBase.rgb + ambientLight.rgb;
+    float3 color = colorBase.rgb;
     for (int i = 0; i < NUM_LIGHTS; i++)
     {
         color += projectedRadiance(i, input.worldPos.xyz, normalize(input.worldNorm));
@@ -166,7 +191,7 @@ float4 psFresnel(VsOutput input) : SV_TARGET{
 float4 psPBR(VsOutput input) : SV_TARGET{
     const float3 pos = input.worldPos.xyz;
     const float3 cameraDir = normalize(cameraPos.xyz - pos);
-    float3 color = colorBase.rgb + ambientLight.rgb;
+    float3 color = 0.0f;
     for (int i = 0; i < NUM_LIGHTS; i++)
     {
         const float3 lightDir = normalize(lightPos[i].xyz - pos);
@@ -174,7 +199,34 @@ float4 psPBR(VsOutput input) : SV_TARGET{
         const float3 radiance = projectedRadiance(i, pos, normalize(input.worldNorm));
         color += radiance * brdf(normalize(input.worldNorm), lightDir, cameraDir);
     }
+    color += ambient(cameraDir, normalize(input.worldNorm));
     return float4(color, colorBase.a);
+}
+
+float4 psCubeMap(VsOutput input) : SV_TARGET{
+    float3 normal = normalize(input.worldPos.xyz);
+    float u = 1.0 - atan2(normal.z, normal.x) / (2 * PI);
+    float v = 0.5 - asin(normal.y) / PI;
+    return txDiffuse.Sample(sampleLinear, float2(u, v));
+}
+
+float4 psIrradianceMap(VsOutput input) : SV_TARGET{
+    float3 normal = normalize(input.worldPos.xyz);
+    float3 dir = abs(normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+    float3 tangent = normalize(cross(dir, normal));
+    float3 bitangent = cross(normal, tangent);
+    float3 irradiance = float3(0.0, 0.0, 0.0);
+    for (int i = 0; i < N1; i++) {
+        for (int j = 0; j < N2; j++) {
+            float phi = i * (2 * PI / N1);
+            float theta = j * (PI / 2 / N2);
+            float3 tangentSample = float3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
+            float3 sampleVec = tangentSample.x * tangent + tangentSample.y * bitangent + tangentSample.z * normal;
+            irradiance += environment.Sample(sampleLinear, sampleVec).rgb * cos(theta) * sin(theta);
+        }
+    }
+    irradiance = PI * irradiance / (N1 * N2);
+    return float4(irradiance, 1.0);
 }
 
 
@@ -216,7 +268,7 @@ float3 TonemapFilmic(float3 color)
 {
     static const float W = 11.2;
 
-    float e = Exposure();
+    float e = Exposure()*exposureMult;
     float3 curr = Uncharted2Tonemap(e * color);
     float3 whiteScale = 1.0f / Uncharted2Tonemap(W);
     return curr * whiteScale;
