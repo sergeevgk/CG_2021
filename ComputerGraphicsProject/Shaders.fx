@@ -16,6 +16,7 @@ Texture2D preintegrated : register(t2);
 SamplerState minMagMipLinear : register(s0);
 SamplerState minMagMipLinearBorder : register(s1);
 
+
 cbuffer GeometryOperators : register(b0)
 {
     matrix world;
@@ -43,7 +44,6 @@ cbuffer Lights : register(b2)
 cbuffer ExposureBuf :register(b3) {
     float exposureMult;
 };
-
 
 struct VsInput {
     float4 localPos : POS;
@@ -97,7 +97,6 @@ float3 ambient(float3 v, float3 n)
     float3 diffuse = irradiance.SampleLevel(minMagMipLinear, n, 0).rgb * colorBase.xyz;
     return kD * (1.0f - metalness) * diffuse + specular;
 }
-
 
 float3 projectedRadiance(int index, float3 pos, float3 normal)
 {
@@ -217,6 +216,7 @@ float4 psCubeMap(VsOutput input) : SV_TARGET{
     float u = 1.0 - atan2(normal.z, normal.x) / (2 * PI);
     float v = 0.5 - asin(normal.y) / PI;
     return txDiffuse.Sample(minMagMipLinear, float2(u, v));
+
 }
 
 float4 psIrradianceMap(VsOutput input) : SV_TARGET{
@@ -232,6 +232,7 @@ float4 psIrradianceMap(VsOutput input) : SV_TARGET{
             float3 tangentSample = float3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
             float3 sampleVec = tangentSample.x * tangent + tangentSample.y * bitangent + tangentSample.z * normal;
             irradiance += environment.Sample(minMagMipLinear, sampleVec).rgb * cos(theta) * sin(theta);
+
         }
     }
     irradiance = PI * irradiance / (N1 * N2);
@@ -247,6 +248,7 @@ VsCopyOutput vsCopyMain(uint input : SV_VERTEXID) {
 
 float4 psLogLuminanceMain(VsCopyOutput input) : SV_TARGET{
     float4 p = txDiffuse.Sample(minMagMipLinear, input.tex);
+
     float l = 0.2126 * p.r + 0.7151 * p.g + 0.0722 * p.b;
     return log(l + 1);
 }
@@ -289,6 +291,7 @@ float3 LinearToSRGB(float3 color)
 
 float4 psToneMappingMain(VsCopyOutput input) : SV_TARGET{
     float4 color = txDiffuse.Sample(minMagMipLinear, input.tex);
+
     return float4(LinearToSRGB(TonemapFilmic(color.xyz)), color.a);
 }
 

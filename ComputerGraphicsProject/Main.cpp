@@ -53,12 +53,14 @@ struct LightsConstantBuffer {
     XMFLOAT4 lightColor[NUM_LIGHTS];
     XMFLOAT4 lightAttenuation[NUM_LIGHTS];
     float lightIntensity[3 * NUM_LIGHTS];
+
 };
 __declspec(align(16))
 struct ExposureConstantBuffer {
     float exposureMult;
-
 };
+
+
 
 
 //--------------------------------------------------------------------------------------
@@ -86,7 +88,6 @@ ID3D11Buffer* g_lightConstantBuffer = nullptr;
 ID3D11Buffer* g_geometryConstantBuffer = nullptr;
 ID3D11Buffer* g_spropsConstantBuffer = nullptr;
 ID3D11Buffer* g_exposureConstantBuffer = nullptr;
-
 
 ID3D11ShaderResourceView* g_pTextureRV = nullptr;
 ID3D11ShaderResourceView* g_pIrradianceRV = nullptr;
@@ -119,7 +120,6 @@ ID3D11PixelShader* g_pNormalDistPixelShader = nullptr;
 ID3D11PixelShader* g_pGeometryPixelShader = nullptr;
 ID3D11PixelShader* g_pFresnelPixelShader = nullptr;
 
-
 ID3D11VertexShader* g_pCopyVertexShader = nullptr;
 ID3D11PixelShader* g_pToneMappingPixelShader = nullptr;
 
@@ -131,6 +131,7 @@ ID3D11PixelShader* g_pIrradianceMapPixelShader = nullptr;
 
 ID3D11PixelShader* g_pPrefilteredColorPixelShader = nullptr;
 ID3D11PixelShader* g_pPreintegratedBRDFPixelShader = nullptr;
+
 
 D3D11_VIEWPORT vp;
 
@@ -301,8 +302,6 @@ HRESULT CreateVS(WCHAR* fileName, string shaderName, ID3D11VertexShader** vertex
             L"The FX file cannot be compiled.  Please run this executable from the directory that contains the FX file.", L"Error", MB_OK);
         return hr;
     }
-
-    // Create the pixel shader
     hr = g_pd3dDevice->CreateVertexShader(pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), nullptr, vertexShader);
     if (FAILED(hr)) {
         pVSBlob->Release();
@@ -381,8 +380,8 @@ HRESULT InitShaders() {
     if (FAILED(hr)) {
         return hr;
     }
-
 }
+
 
 HRESULT Init() {
     HRESULT hr;
@@ -488,6 +487,7 @@ HRESULT Init() {
     D3D11_DEPTH_STENCIL_DESC depthStencilDesc = CD3D11_DEPTH_STENCIL_DESC(CD3D11_DEFAULT());
     depthStencilDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
     g_pd3dDevice->CreateDepthStencilState(&depthStencilDesc, &g_pDepthStencilState);
+
 
     InitShaders();
 
@@ -662,6 +662,7 @@ HRESULT CreateCubeMap(UINT size, UINT mipLevels, ID3D11PixelShader* pixelShader,
     const int numSides = 6;
     CD3D11_TEXTURE2D_DESC environmentDesc(DXGI_FORMAT_R32G32B32A32_FLOAT, size, size, numSides, mipLevels, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0, 1, 0, D3D11_RESOURCE_MISC_TEXTURECUBE);
 
+
     ID3D11Texture2D* envTexture = nullptr;
     HRESULT hr = g_pd3dDevice->CreateTexture2D(&environmentDesc, nullptr, &envTexture);
     if (FAILED(hr)) { return hr; }
@@ -756,6 +757,7 @@ HRESULT CreateCubeMap(UINT size, UINT mipLevels, ID3D11PixelShader* pixelShader,
     g_pd3dDevice->CreateShaderResourceView(envTexture, &environmentRVDesc, dstEnvironmentRV);
     envTexture->Release();
     rt.Clean();
+
 }
 
 HRESULT InitScene() {
@@ -802,6 +804,7 @@ HRESULT InitScene() {
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     hr = g_pd3dDevice->CreateSamplerState(&samplerDesc, &g_pMinMagMipLinearBorder);
+
     if (FAILED(hr)) { return hr; }
 
     RECT winRect;
@@ -914,6 +917,7 @@ void CleanupDevice()
     if (g_pDepthStencilView) g_pDepthStencilView->Release();
     if (g_pDepthStencilState) g_pDepthStencilState->Release();
     if (g_renderTargetView) g_renderTargetView->Release();
+
     if (g_pSwapChain) g_pSwapChain->Release();
     if (g_deviceContext) g_deviceContext->Release();
     if (g_pd3dDevice) g_pd3dDevice->Release();
@@ -1076,6 +1080,7 @@ void Render() {
     sphereColorSRGB = XMFLOAT4(sphereColor);
     SpherePropsConstantBuffer spropsConstantBuffer = { sphereColorSRGB, roughness, metalness };
     g_deviceContext->UpdateSubresource(g_spropsConstantBuffer, 0, nullptr, &spropsConstantBuffer, 0, 0);
+
     ExposureConstantBuffer exposureCB;
     exposureCB.exposureMult = exposureMult;
     LightsConstantBuffer lightsConstBuffer;
