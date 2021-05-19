@@ -71,16 +71,23 @@ VsOutput vsMain(VsInput input) {
     return output;
 }
 
-float3 ambient(float3 cameraDir, float3 normal)
-{
+float3 FresnelSchlickRoughnessFunction(float3 v, float3 n) {
     const float3 F0_noncond = 0.04f;
     const float3 F0 = (1.0f - metalness) * F0_noncond + metalness * colorBase.rgb;
-    const float dotMult = saturate(dot(cameraDir, normal));
+    const float dotMult = saturate(dot(v, n));
     float3 F = F0 + (max(1.0f - roughness, F0) - F0) * pow(1.0f - dotMult, 5);
-    float3 kD = float3(1.0f, 1.0f, 1.0f) - F;
-    float3 irradiance = environment.Sample(sampleLinear, normal).rgb;
+    return F;
+}
+
+float3 ambient(float3 v, float3 n)
+{
+    float3 F = FresnelSchlickRoughnessFunction(v, n);
+    float3 kS = F;
+    float3 kD = float3(1.0f, 1.0f, 1.0f) - kS;
+    kD *= 1.0 - metalness;
+    float3 irradiance = environment.Sample(sampleLinear, n).rgb;
     float3 diffuse = irradiance * colorBase.xyz;
-    return kD * (1.0f - metalness) * diffuse;
+    return kD * diffuse;
 }
 
 
