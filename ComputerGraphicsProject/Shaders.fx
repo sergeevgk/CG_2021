@@ -200,7 +200,7 @@ float4 psFresnel(VsOutput input) : SV_TARGET{
 float4 psPBR(VsOutput input) : SV_TARGET{
     const float3 pos = input.worldPos.xyz;
     const float3 cameraDir = normalize(cameraPos.xyz - pos);
-    float3 color = colorBase.rgb;
+    float3 color = 0.0f;
     for (int i = 0; i < NUM_LIGHTS; i++)
     {
         const float3 lightDir = normalize(lightPos[i].xyz - pos);
