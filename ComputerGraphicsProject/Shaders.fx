@@ -7,9 +7,15 @@
 
 Texture2D txDiffuse : register(t0);
 
-TextureCube environment : register(t0);
+TextureCube environment : register(t0); 
 
-SamplerState sampleLinear : register(s0);
+TextureCube irradiance : register(t0);
+TextureCube prefiltered : register(t1);
+Texture2D preintegrated : register(t2);
+
+SamplerState minMagMipLinear : register(s0);
+SamplerState minMagMipLinearBorder : register(s1);
+
 
 cbuffer GeometryOperators : register(b0)
 {
@@ -71,23 +77,25 @@ VsOutput vsMain(VsInput input) {
     return output;
 }
 
-float3 FresnelSchlickRoughnessFunction(float3 v, float3 n) {
-    const float3 F0_noncond = 0.04f;
-    const float3 F0 = (1.0f - metalness) * F0_noncond + metalness * colorBase.rgb;
-    const float dotMult = saturate(dot(v, n));
-    float3 F = F0 + (max(1.0f - roughness, F0) - F0) * pow(1.0f - dotMult, 5);
-    return F;
-}
-
 float3 ambient(float3 v, float3 n)
 {
-    float3 F = FresnelSchlickRoughnessFunction(v, n);
-    float3 kS = F;
-    float3 kD = float3(1.0f, 1.0f, 1.0f) - kS;
-    kD *= 1.0 - metalness;
-    float3 irradiance = environment.Sample(sampleLinear, n).rgb;
-    float3 diffuse = irradiance * colorBase.xyz;
-    return kD * diffuse;
+    const float3 F0_noncond = 0.04f;
+    const float MAX_REFLECTION_LOD = 4.0;
+    
+    float3 r = normalize(reflect(-v, n));
+
+    float3 prefilteredColor = prefiltered.SampleLevel(minMagMipLinear, r, roughness * MAX_REFLECTION_LOD).rgb;
+    float3 F0 = lerp(F0_noncond, colorBase.rgb, metalness);
+
+    const float dotMult = saturate(dot(v, n));
+    float3 F = F0 + (max(1.0f - roughness, F0) - F0) * pow(1.0f - dotMult, 5);
+
+    float2 envBRDF = preintegrated.Sample(minMagMipLinearBorder, float2(max(dot(n, v), 0.0), roughness)).xy;
+    float3 specular = prefilteredColor * (F0 * envBRDF.x + envBRDF.y);
+
+    float3 kD = float3(1.0f, 1.0f, 1.0f) - F;
+    float3 diffuse = irradiance.SampleLevel(minMagMipLinear, n, 0).rgb * colorBase.xyz;
+    return kD * (1.0f - metalness) * diffuse + specular;
 }
 
 float3 projectedRadiance(int index, float3 pos, float3 normal)
@@ -207,7 +215,8 @@ float4 psCubeMap(VsOutput input) : SV_TARGET{
     float3 normal = normalize(input.worldPos.xyz);
     float u = 1.0 - atan2(normal.z, normal.x) / (2 * PI);
     float v = 0.5 - asin(normal.y) / PI;
-    return txDiffuse.Sample(sampleLinear, float2(u, v));
+    return txDiffuse.Sample(minMagMipLinear, float2(u, v));
+
 }
 
 float4 psIrradianceMap(VsOutput input) : SV_TARGET{
@@ -222,13 +231,13 @@ float4 psIrradianceMap(VsOutput input) : SV_TARGET{
             float theta = j * (PI / 2 / N2);
             float3 tangentSample = float3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
             float3 sampleVec = tangentSample.x * tangent + tangentSample.y * bitangent + tangentSample.z * normal;
-            irradiance += environment.Sample(sampleLinear, sampleVec).rgb * cos(theta) * sin(theta);
+            irradiance += environment.Sample(minMagMipLinear, sampleVec).rgb * cos(theta) * sin(theta);
+
         }
     }
     irradiance = PI * irradiance / (N1 * N2);
     return float4(irradiance, 1.0);
 }
-
 
 VsCopyOutput vsCopyMain(uint input : SV_VERTEXID) {
     VsCopyOutput output = (VsCopyOutput)0;
@@ -238,7 +247,8 @@ VsCopyOutput vsCopyMain(uint input : SV_VERTEXID) {
 }
 
 float4 psLogLuminanceMain(VsCopyOutput input) : SV_TARGET{
-    float4 p = txDiffuse.Sample(sampleLinear, input.tex);
+    float4 p = txDiffuse.Sample(minMagMipLinear, input.tex);
+
     float l = 0.2126 * p.r + 0.7151 * p.g + 0.0722 * p.b;
     return log(l + 1);
 }
@@ -280,7 +290,8 @@ float3 LinearToSRGB(float3 color)
 }
 
 float4 psToneMappingMain(VsCopyOutput input) : SV_TARGET{
-    float4 color = txDiffuse.Sample(sampleLinear, input.tex);
+    float4 color = txDiffuse.Sample(minMagMipLinear, input.tex);
+
     return float4(LinearToSRGB(TonemapFilmic(color.xyz)), color.a);
 }
 
@@ -295,5 +306,110 @@ VsEnvironmentOutput vsEnvironment(VsInput input) {
 }
 
 float4 psEnvironment(VsEnvironmentOutput input) : SV_TARGET{
-    return environment.Sample(sampleLinear, input.tex);
+    return environment.SampleLevel(minMagMipLinear, input.tex, 0);
+}
+
+
+float RadicalInverse_VdC(uint bits)
+{
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10; // / 0x100000000
+}
+
+float2 Hammersley(uint i, uint N)
+{
+    return float2(float(i) / float(N), RadicalInverse_VdC(i));
+}
+
+float3 ImportanceSampleGGX(float2 Xi, float3 norm, float roughness)
+{
+    float a = roughness * roughness;
+    float phi = 2.0 * PI * Xi.x;
+    float cosTheta = sqrt((1.0 - Xi.y) / (1.0 + (a * a - 1.0) * Xi.y));
+    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+    float3 H;
+    H.x = cos(phi) * sinTheta;
+    H.z = sin(phi) * sinTheta;
+    H.y = cosTheta;
+    float3 up = abs(norm.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+    float3 tangent = normalize(cross(up, norm));
+    float3 bitangent = cross(norm, tangent);
+    float3 sampleVec = tangent * H.x + bitangent * H.z + norm * H.y;
+    return normalize(sampleVec);
+}
+
+float4 psPrefilteredColor(VsOutput input) : SV_TARGET{
+    float3 norm = normalize(input.worldPos.xyz);
+    float3 view = norm;
+    float totalWeight = 0.0;
+    float3 prefilteredColor = float3(0, 0, 0);
+    static const int SAMPLE_COUNT = 1024;
+    for (int i = 0; i < SAMPLE_COUNT; i++) {
+        float2 Xi = Hammersley(i, SAMPLE_COUNT);
+        float3 H = ImportanceSampleGGX(Xi, norm, roughness);
+        float3 L = normalize(2.0 * dot(view, H) * H - view);
+        float ndotl = max(dot(norm, L), 0.0);
+        float ndoth = max(dot(norm, H), 0.0);
+        float hdotv = max(dot(H, view), 0.0);
+        float D = ndf(norm, H);
+        float pdf = (D * ndoth / (4.0 * hdotv)) + 0.0001;
+        float resolution = 512.0;
+        float saTexel = 4.0 * PI / (6.0 * resolution * resolution);
+        float saSample = 1.0 / (float(SAMPLE_COUNT) * pdf + 0.0001);
+        float mipLevel = roughness == 0.0 ? 0.0 : 0.5 * log2(saSample / saTexel);
+        if (ndotl > 0.0) {
+            prefilteredColor += environment.SampleLevel(minMagMipLinear, L, mipLevel).rgb * ndotl;
+            totalWeight += ndotl;
+        }
+    }
+    prefilteredColor = prefilteredColor / totalWeight;
+    return float4(prefilteredColor, 1);
+}
+
+float SchlickGGX(float3 n, float3 v, float k) {
+    const float dotMult = saturate(dot(n, v));
+    return dotMult / (dotMult * (1.0f - k) + k);
+}
+
+float GeometrySmith(float3 n, float3 v, float3 l, float roughness) {
+    const float k = roughness * roughness / 2.0f;
+    return SchlickGGX(n, v, k) * SchlickGGX(n, l, k);
+}
+
+float2 IntegrateBRDF(float NdotV, float roughness)
+{
+    float3 V;
+    V.x = sqrt(1.0 - NdotV * NdotV);
+    V.z = 0.0;
+    V.y = NdotV;
+    float A = 0.0;
+    float B = 0.0;
+    float3 N = float3(0.0, 1.0, 0.0);
+    static const int SAMPLE_COUNT = 1024;
+    for (int i = 0; i < SAMPLE_COUNT; i++) {
+        float2 Xi = Hammersley(i, SAMPLE_COUNT);
+        float3 H = ImportanceSampleGGX(Xi, N, roughness);
+        float3 L = normalize(2.0 * dot(V, H) * H - V);
+        float NdotL = max(L.y, 0.0);
+        float NdotH = max(H.y, 0.0);
+        float VdotH = max(dot(V, H), 0.0);
+        if (NdotL > 0.0) {
+            float G = GeometrySmith(N, V, L, roughness);
+            float G_Vis = (G * VdotH) / (NdotH * NdotV);
+            float Fc = pow(1.0 - VdotH, 5.0);
+            A += (1.0 - Fc) * G_Vis;
+            B += Fc * G_Vis;
+        }
+    }
+    A /= float(SAMPLE_COUNT);
+    B /= float(SAMPLE_COUNT);
+    return float2(A, B);
+}
+
+float4 psPreintegratedBRDF(VsOutput input) : SV_TARGET{
+    return float4(IntegrateBRDF(input.worldPos.x, 1 - input.worldPos.y), 0, 1);
 }
