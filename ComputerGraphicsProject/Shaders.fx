@@ -90,7 +90,6 @@ float3 ambient(float3 v, float3 n)
     return kD * diffuse;
 }
 
-
 float3 projectedRadiance(int index, float3 pos, float3 normal)
 {
     const float deg = 1.0f;
@@ -229,6 +228,7 @@ float4 psIrradianceMap(VsOutput input) : SV_TARGET{
     irradiance = PI * irradiance / (N1 * N2);
     return float4(irradiance, 1.0);
 }
+
 
 VsCopyOutput vsCopyMain(uint input : SV_VERTEXID) {
     VsCopyOutput output = (VsCopyOutput)0;
